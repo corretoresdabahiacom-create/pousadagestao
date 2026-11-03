@@ -198,6 +198,46 @@ describe("cadastro da pousada e convites", () => {
   });
 });
 
+describe("personalização e galeria", () => {
+  const photo = (uid: string, over: Record<string, unknown> = {}) => ({
+    category: "refeitorio", dataUrl: "data:image/jpeg;base64,AAAA", caption: "Café da manhã",
+    createdBy: uid, createdAt: serverTimestamp(), ...over,
+  });
+
+  it("gestor cria foto; recepção não; categoria inválida e foto grande demais são recusadas", async () => {
+    await assertSucceeds(setDoc(doc(staff(A, "owner"), `tenants/${A}/photos/f1`), photo(`${A}-owner`)));
+    await assertSucceeds(setDoc(doc(staff(A, "admin"), `tenants/${A}/photos/f2`), photo(`${A}-admin`)));
+    await assertFails(setDoc(doc(staff(A, "reception"), `tenants/${A}/photos/f3`), photo(`${A}-reception`)));
+    await assertFails(setDoc(doc(staff(A, "owner"), `tenants/${A}/photos/f4`), photo(`${A}-owner`, { category: "x" })));
+    await assertFails(setDoc(doc(staff(A, "owner"), `tenants/${A}/photos/f5`), photo(`${A}-owner`, { dataUrl: "a".repeat(260000) })));
+    await assertFails(setDoc(doc(staff(B, "owner"), `tenants/${A}/photos/f6`), photo(`${B}-owner`)));
+  });
+
+  it("hóspede (anônimo) lê a galeria e os dados públicos, mas não altera", async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), `tenants/${A}/photos/f1`), { category: "garagem", dataUrl: "data:image/jpeg;base64,AAAA", createdBy: "x" });
+    });
+    const g = guest("hospede-1");
+    await assertSucceeds(getDocs(collection(g, `tenants/${A}/photos`)));
+    await assertFails(deleteDoc(doc(g, `tenants/${A}/photos/f1`)));
+    await assertFails(setDoc(doc(g, `tenants/${A}/publicInfo/main`), { brandColor: "#ff0000" }));
+  });
+
+  it("cor da marca precisa ser hexadecimal; gestor edita, recepção não", async () => {
+    const ref = (db: ReturnType<typeof staff>) => doc(db, `tenants/${A}/publicInfo/main`);
+    await assertSucceeds(setDoc(ref(staff(A, "admin")), { displayName: "X", brandColor: "#1d4ed8", mapsUrl: "https://maps.app.goo.gl/abc" }));
+    await assertFails(setDoc(ref(staff(A, "admin")), { displayName: "X", brandColor: "red" }));
+    await assertFails(setDoc(ref(staff(A, "reception")), { displayName: "X", brandColor: "#1d4ed8" }));
+  });
+
+  it("gestor só altera a legenda da foto e pode excluí-la", async () => {
+    await assertSucceeds(setDoc(doc(staff(A, "owner"), `tenants/${A}/photos/f1`), photo(`${A}-owner`)));
+    await assertSucceeds(updateDoc(doc(staff(A, "owner"), `tenants/${A}/photos/f1`), { caption: "Novo" }));
+    await assertFails(updateDoc(doc(staff(A, "owner"), `tenants/${A}/photos/f1`), { category: "garagem" }));
+    await assertSucceeds(deleteDoc(doc(staff(A, "owner"), `tenants/${A}/photos/f1`)));
+  });
+});
+
 describe("papéis", () => {
   it("financeiro: só quem tem papel financeiro lê contas a pagar", async () => {
     await assertFails(getDoc(doc(staff(A, "staff"), `tenants/${A}/accountsPayable/ap1`)));

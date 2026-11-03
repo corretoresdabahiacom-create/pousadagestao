@@ -103,7 +103,27 @@ service cloud.firestore {
         allow get: if authed();
         allow list: if false;
         allow write: if isManager(t)
-          && request.resource.data.get('logoDataUrl', '').size() < 300000;
+          && request.resource.data.get('logoDataUrl', '').size() < 300000
+          && request.resource.data.get('brandColor', '#000000').matches('^#[0-9a-fA-F]{6}$')
+          && request.resource.data.get('mapsUrl', '').size() <= 500
+          && request.resource.data.get('description', '').size() <= 600;
+      }
+
+      // Galeria (pousada, quartos, refeitório, garagem…). Conteúdo de divulgação:
+      // legível por qualquer usuário autenticado (inclusive hóspede); só gestores alteram.
+      match /photos/{id} {
+        allow read: if authed();
+        allow create: if isManager(t)
+          && request.resource.data.category in ['pousada', 'quarto', 'refeitorio', 'garagem', 'area_comum', 'entorno', 'outros']
+          && request.resource.data.dataUrl is string
+          && request.resource.data.dataUrl.size() < 260000
+          && request.resource.data.get('caption', '').size() <= 120
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.createdAt == request.time;
+        allow update: if isManager(t)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['caption'])
+          && request.resource.data.get('caption', '').size() <= 120;
+        allow delete: if isManager(t);
       }
 
       match /settings/{doc} {

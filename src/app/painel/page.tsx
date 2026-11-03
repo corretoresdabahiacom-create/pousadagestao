@@ -47,7 +47,7 @@ export default function DashboardPage() {
           title="Nenhum quarto cadastrado"
           text="Cadastre os quartos da pousada para começar. Depois você poderá fazer check-ins."
           action={
-            <Link href="/painel/quartos/" className="inline-flex rounded-lg bg-teal-700 px-4 py-2 text-sm font-medium text-white hover:bg-teal-800">
+            <Link href="/painel/quartos/" className="inline-flex rounded-lg bg-brand-700 px-4 py-2 text-sm font-medium text-white hover:bg-brand-800">
               Cadastrar quartos
             </Link>
           }

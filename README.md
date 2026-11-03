@@ -37,7 +37,8 @@ npx firebase deploy --only hosting --project pousadagestao-2f344           # sit
 ## Estado atual
 
 Feito: login, criação da pousada (onboarding), convites da equipe com papéis, quartos (cadastro, edição,
-arquivamento, situação), painel inicial com dados reais, regras de segurança testadas.
+arquivamento, situação), painel inicial com dados reais, personalização (cor da marca, logo, descrição,
+link do Google Maps) e galeria de fotos por categoria (pousada, quartos, refeitório, garagem…), regras de segurança testadas.
 
 Próximo: hóspedes, check-in e QR Code; portal do hóspede e chat; consumo e checkout; financeiro e DRE.
 

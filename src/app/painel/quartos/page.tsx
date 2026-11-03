@@ -122,7 +122,7 @@ export default function RoomsPage() {
             <button
               key={v}
               onClick={() => setView(v)}
-              className={`rounded-md px-3 py-1 ${view === v ? "bg-white text-teal-800 shadow-sm" : "text-slate-600"}`}
+              className={`rounded-md px-3 py-1 ${view === v ? "bg-white text-brand-800 shadow-sm" : "text-slate-600"}`}
             >
               {v === "cards" ? "Cartões" : "Lista"}
             </button>

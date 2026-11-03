@@ -7,12 +7,14 @@ import { useAuth } from "@/lib/auth/AuthProvider";
 import { ROLE_LABELS, isManager } from "@/lib/types";
 import { Spinner } from "@/components/ui";
 import { BRAND } from "@/config/brand";
+import { useBrandTheme } from "@/lib/branding";
 
 export default function PainelLayout({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const { loading, user, membership, tenant, logout } = useAuth();
   const [open, setOpen] = useState(false);
+  useBrandTheme(membership?.tenantId);
 
   useEffect(() => {
     if (loading) return;
@@ -26,6 +28,7 @@ export default function PainelLayout({ children }: { children: ReactNode }) {
   const nav = [
     { href: "/painel/", label: "Início", show: true },
     { href: "/painel/quartos/", label: "Quartos", show: true },
+    { href: "/painel/personalizar/", label: "Personalizar", show: manager },
     { href: "/painel/equipe/", label: "Equipe", show: manager },
   ].filter((n) => n.show);
 
@@ -39,7 +42,7 @@ export default function PainelLayout({ children }: { children: ReactNode }) {
           href={n.href}
           onClick={() => setOpen(false)}
           className={`rounded-lg px-3 py-2 text-sm font-medium ${
-            isActive(n.href) ? "bg-teal-50 text-teal-800" : "text-slate-700 hover:bg-slate-100"
+            isActive(n.href) ? "bg-brand-50 text-brand-800" : "text-slate-700 hover:bg-slate-100"
           }`}
         >
           {n.label}
@@ -53,7 +56,7 @@ export default function PainelLayout({ children }: { children: ReactNode }) {
       {/* Menu lateral (desktop) */}
       <aside className="hidden w-60 shrink-0 border-r border-slate-200 bg-white lg:block">
         <div className="border-b border-slate-200 p-4">
-          <p className="text-lg font-bold text-teal-800">{BRAND.name}</p>
+          <p className="text-lg font-bold text-brand-800">{BRAND.name}</p>
           <p className="mt-0.5 truncate text-sm text-slate-600">{tenant.displayName || tenant.name}</p>
         </div>
         {menu}
@@ -62,7 +65,7 @@ export default function PainelLayout({ children }: { children: ReactNode }) {
       {/* Barra superior (celular) */}
       <header className="sticky top-0 z-30 flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3 lg:hidden">
         <div className="min-w-0">
-          <p className="font-bold text-teal-800">{BRAND.name}</p>
+          <p className="font-bold text-brand-800">{BRAND.name}</p>
           <p className="truncate text-xs text-slate-600">{tenant.displayName || tenant.name}</p>
         </div>
         <button
@@ -81,7 +84,7 @@ export default function PainelLayout({ children }: { children: ReactNode }) {
           <span className="text-slate-600">
             {user.displayName || user.email} · {ROLE_LABELS[membership.role]}
           </span>
-          <button onClick={logout} className="font-medium text-teal-700 hover:underline">
+          <button onClick={logout} className="font-medium text-brand-700 hover:underline">
             Sair
           </button>
         </div>
@@ -93,7 +96,7 @@ export default function PainelLayout({ children }: { children: ReactNode }) {
           )}
           {children}
           <div className="mt-8 lg:hidden">
-            <button onClick={logout} className="text-sm font-medium text-teal-700 hover:underline">
+            <button onClick={logout} className="text-sm font-medium text-brand-700 hover:underline">
               Sair ({user.email})
             </button>
           </div>

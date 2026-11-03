@@ -71,7 +71,7 @@ function LoginForm() {
   return (
     <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center px-4 py-10">
       <div className="mb-6 text-center">
-        <h1 className="text-2xl font-bold text-teal-800">{BRAND.name}</h1>
+        <h1 className="text-2xl font-bold text-brand-800">{BRAND.name}</h1>
         <p className="mt-1 text-sm text-slate-600">{BRAND.tagline}</p>
       </div>
 
@@ -86,7 +86,7 @@ function LoginForm() {
                 setError("");
                 setInfo("");
               }}
-              className={`rounded-md py-2 transition ${mode === m ? "bg-white text-teal-800 shadow-sm" : "text-slate-600"}`}
+              className={`rounded-md py-2 transition ${mode === m ? "bg-white text-brand-800 shadow-sm" : "text-slate-600"}`}
             >
               {m === "login" ? "Entrar" : "Criar conta"}
             </button>
@@ -122,12 +122,12 @@ function LoginForm() {
           </Button>
 
           {mode === "login" && (
-            <button type="button" onClick={() => setMode("reset")} className="block w-full text-center text-sm text-teal-700 hover:underline">
+            <button type="button" onClick={() => setMode("reset")} className="block w-full text-center text-sm text-brand-700 hover:underline">
               Esqueci minha senha
             </button>
           )}
           {mode === "reset" && (
-            <button type="button" onClick={() => setMode("login")} className="block w-full text-center text-sm text-teal-700 hover:underline">
+            <button type="button" onClick={() => setMode("login")} className="block w-full text-center text-sm text-brand-700 hover:underline">
               Voltar
             </button>
           )}

@@ -78,7 +78,8 @@ export default function OnboardingPage() {
       await refresh();
       router.replace("/painel/");
     } catch (err) {
-      setError(friendlyError(err));
+      const step = (err as { step?: string })?.step;
+      setError(friendlyError(err) + (step ? ` (etapa ${step})` : ""));
     } finally {
       setBusy(false);
     }
@@ -87,7 +88,7 @@ export default function OnboardingPage() {
   return (
     <main className="mx-auto max-w-2xl px-4 py-8">
       <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-xl font-bold text-teal-800">{BRAND.name}</h1>
+        <h1 className="text-xl font-bold text-brand-800">{BRAND.name}</h1>
         <button onClick={logout} className="text-sm text-slate-600 hover:underline">
           Sair ({user.email})
         </button>

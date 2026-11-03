@@ -191,7 +191,7 @@ export default function TeamPage() {
                       </Button>
                     </>
                   ) : (
-                    <Badge className="bg-teal-50 text-teal-800 ring-teal-600/20">{ROLE_LABELS[m.role]}</Badge>
+                    <Badge className="bg-brand-50 text-brand-800 ring-brand-600/20">{ROLE_LABELS[m.role]}</Badge>
                   )}
                 </div>
               </li>

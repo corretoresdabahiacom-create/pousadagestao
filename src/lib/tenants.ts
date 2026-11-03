@@ -3,6 +3,12 @@ import { collection, deleteDoc, doc, getDoc, serverTimestamp, writeBatch } from 
 import { getFirebase } from "@/lib/firebase/client";
 import { INVITABLE_ROLES, type Role } from "@/lib/types";
 
+/** Marca o erro com a etapa que falhou, para facilitar o diagnóstico. */
+function tagStep(e: unknown, step: string): unknown {
+  if (e && typeof e === "object") (e as { step?: string }).step = step;
+  return e;
+}
+
 export interface TenantForm {
   legalName: string;
   displayName: string;
@@ -27,6 +33,8 @@ export interface TenantForm {
  */
 export async function createTenant(user: User, f: TenantForm): Promise<string> {
   const { db } = getFirebase();
+  // Garante que o e-mail verificado já consta no token usado pelas Rules.
+  await user.getIdToken(true);
   const tenantRef = doc(collection(db, "tenants"));
   const t = tenantRef.id;
 
@@ -47,7 +55,11 @@ export async function createTenant(user: User, f: TenantForm): Promise<string> {
     createdAt: serverTimestamp(),
   });
   b1.set(doc(db, `users/${user.uid}`), { tenantId: t });
-  await b1.commit();
+  try {
+    await b1.commit();
+  } catch (e) {
+    throw tagStep(e, "1/2");
+  }
 
   const b2 = writeBatch(db);
   b2.set(doc(db, `tenants/${t}/settings/main`), {
@@ -84,7 +96,11 @@ export async function createTenant(user: User, f: TenantForm): Promise<string> {
     details: {},
     at: serverTimestamp(),
   });
-  await b2.commit();
+  try {
+    await b2.commit();
+  } catch (e) {
+    throw tagStep(e, "2/2");
+  }
   return t;
 }
 

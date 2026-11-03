@@ -3,12 +3,12 @@
 import { useEffect, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
 
 const base =
-  "block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm placeholder:text-slate-400 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-600/30 disabled:bg-slate-50 disabled:text-slate-500";
+  "block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm placeholder:text-slate-400 focus:border-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-600/30 disabled:bg-slate-50 disabled:text-slate-500";
 
 export function Spinner({ label = "Carregando…" }: { label?: string }) {
   return (
     <div className="flex items-center justify-center gap-3 p-10 text-slate-500" role="status">
-      <span className="h-5 w-5 animate-spin rounded-full border-2 border-slate-300 border-t-teal-600" />
+      <span className="h-5 w-5 animate-spin rounded-full border-2 border-slate-300 border-t-brand-600" />
       <span className="text-sm">{label}</span>
     </div>
   );
@@ -16,7 +16,7 @@ export function Spinner({ label = "Carregando…" }: { label?: string }) {
 
 type BtnVariant = "primary" | "secondary" | "danger" | "ghost";
 const variants: Record<BtnVariant, string> = {
-  primary: "bg-teal-700 text-white hover:bg-teal-800 focus-visible:outline-teal-700",
+  primary: "bg-brand-700 text-white hover:bg-brand-800 focus-visible:outline-brand-700",
   secondary: "bg-white text-slate-700 ring-1 ring-inset ring-slate-300 hover:bg-slate-50",
   danger: "bg-red-600 text-white hover:bg-red-700",
   ghost: "text-slate-600 hover:bg-slate-100",

@@ -30,6 +30,8 @@ interface Info {
   logoDataUrl?: string;
   description?: string;
   mapsUrl?: string;
+  checkoutReminderText?: string;
+  paymentInfo?: string;
   address?: string;
   city?: string;
   state?: string;
@@ -201,6 +203,8 @@ function Identity({ tenantId, uid, info, onNotice }: { tenantId: string; uid: st
 function About({ tenantId, uid, info, onNotice }: { tenantId: string; uid: string; info: Info; onNotice: (m: string) => void }) {
   const [description, setDescription] = useState(info.description ?? "");
   const [mapsUrl, setMapsUrl] = useState(info.mapsUrl ?? "");
+  const [reminder, setReminder] = useState(info.checkoutReminderText ?? "");
+  const [payInfo, setPayInfo] = useState(info.paymentInfo ?? "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -218,6 +222,8 @@ function About({ tenantId, uid, info, onNotice }: { tenantId: string; uid: strin
         {
           description: description.trim().slice(0, 600),
           mapsUrl: mapsUrl.trim() || deleteField(),
+          checkoutReminderText: reminder.trim().slice(0, 500) || deleteField(),
+          paymentInfo: payInfo.trim().slice(0, 500) || deleteField(),
           updatedAt: serverTimestamp(),
         },
         { merge: true },
@@ -246,6 +252,12 @@ function About({ tenantId, uid, info, onNotice }: { tenantId: string; uid: strin
             error={mapsUrl && !urlOk ? "Link inválido: use um endereço do Google Maps (https)." : undefined}
           >
             <Input type="url" value={mapsUrl} onChange={(e) => setMapsUrl(e.target.value)} placeholder="https://maps.app.goo.gl/…" maxLength={500} />
+          </Field>
+          <Field label="Mensagem do aviso de checkout" hint={`${reminder.length}/500. Mostrada ao hóspede 2 h e 30 min antes da saída. Vazio = mensagem padrão.`}>
+            <Textarea rows={3} maxLength={500} value={reminder} onChange={(e) => setReminder(e.target.value)} />
+          </Field>
+          <Field label="Como pagar (PIX, dados bancários…)" hint={`${payInfo.length}/500. Aparece em "Minha conta" no portal do hóspede. Informe só o que for público.`}>
+            <Textarea rows={3} maxLength={500} value={payInfo} onChange={(e) => setPayInfo(e.target.value)} />
           </Field>
           <Button loading={busy} onClick={save}>Salvar</Button>
         </div>

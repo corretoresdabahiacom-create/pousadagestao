@@ -40,7 +40,7 @@ export default function PainelLayout({ children }: { children: ReactNode }) {
     { href: "/painel/limpeza/", label: "Limpeza", show: ops },
     { href: "/painel/manutencao/", label: "Manutenção", show: ops },
     { href: "/painel/financeiro/", label: "Financeiro", show: money },
-    { href: "/painel/relatorios/", label: "Relatórios", show: money },
+    { href: "/painel/relatorios/", label: "Relatórios", show: money || role === "reception" },
     { href: "/painel/personalizar/", label: "Personalizar", show: manager },
     { href: "/painel/equipe/", label: "Equipe", show: manager },
   ].filter((n) => n.show);

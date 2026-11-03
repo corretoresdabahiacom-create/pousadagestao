@@ -56,6 +56,7 @@ async function loadMembership(user: User): Promise<{ membership: Membership | nu
         displayName: td.displayName as string | undefined,
         status: td.status as string,
         planId: td.planId as string,
+        limits: td.limits as { maxRooms?: number } | undefined,
       },
     };
   } catch {

@@ -233,7 +233,7 @@ function CheckinForm() {
             <Input inputMode="decimal" value={feesText} onChange={(e) => setFeesText(e.target.value)} placeholder="0,00" />
           </Field>
           <div className="sm:col-span-2">
-            <Field label="Observações">
+            <Field label="Observações da hospedagem" hint="Atenção: o hóspede consegue ver este campo no portal dele. Não escreva anotações internas.">
               <Textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={500} />
             </Field>
           </div>

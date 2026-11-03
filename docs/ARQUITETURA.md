@@ -115,3 +115,21 @@ Nenhuma fase é marcada como concluída sem testes passando.
 ## Regra da diária (pousada 24h)
 
 Não há horário fixo de check-in/checkout. Cada hospedagem tem entrada em qualquer horário e a diária fecha a cada 24 horas contadas da entrada (`settings.stayHours = 24`). Os lembretes de saída (2h e 30min antes) serão calculados a partir do fim do período de 24h de cada hospedagem.
+
+## Fases 4–10 — decisões de implementação
+
+- **Check-in atômico:** uma transação grava hóspede, hospedagem, QR (`stayAccess/{hash}`), quarto→ocupado, acompanhantes, pagamento inicial e auditoria. As Rules exigem, no mesmo lote, quarto `available`→`occupied` com `currentStayId` igual à hospedagem e QR ativo da mesma hospedagem (evita dupla reserva em concorrência).
+- **Checkout atômico:** um lote grava pagamento final (+ `cashEntries`), `revenues/checkout-<id>` (competência), título em `accountsReceivable` se houver saldo, tarefa de limpeza, revogação do QR, quarto→`awaiting_cleaning` e fechamento. As Rules só aceitam fechar a hospedagem se o QR for revogado no mesmo lote.
+- **Idempotência:** IDs determinísticos (`init-<stay>`, `stay-<chave>`, `checkout-<stay>`, `clean-<stay>`, `pay-<conta>`, `rcv-<título>-<chave>`); repetir o envio vira `update` negado.
+- **Razão de caixa (`cashEntries`) e receitas (`revenues`) são imutáveis.** Estorno é novo lançamento. Transferências são marcadas e ficam fora da DRE.
+- **DRE:** *competência* = receitas dos fechamentos (líquidas de descontos) e despesas pela data de competência (pagas ou não); *caixa* = entradas e saídas efetivas. Há avisos para "Não classificado" e para período sem dados.
+- **Portal do hóspede:** login anônimo + `stayAccess/{hash}/sessions/{uid}`. O token vai no fragmento da URL (não chega ao servidor), é movido para `sessionStorage` da aba e apagado da barra. Acesso cai em tempo real quando o QR é revogado ou a pousada suspensa.
+- **Perfis na limpeza:** apenas funcionário, gerente e proprietário alteram o estado do quarto na limpeza (Rules); a recepção acompanha.
+- **Painel master:** acesso por `platformAdmins/{uid}` (criado só no console). Lê e altera `tenants` (plano, status, limites) e `platform` (planos, log). Não lê dados de hóspedes nem financeiro.
+
+## Segurança e LGPD — resumo
+
+- Dados pessoais de hóspedes e financeiros só são legíveis por perfis autorizados (Rules). Hóspede lê somente a própria hospedagem enquanto o QR está ativo.
+- Auditoria (`auditLogs`) é só de acréscimo; leitura restrita ao proprietário.
+- Exportações CSV/XLSX neutralizam "injeção de fórmula" (texto iniciado por `= + - @`).
+- Pendente fora do escopo do plano gratuito: limite de tentativas no servidor, backup automático, push com navegador fechado.

@@ -133,6 +133,7 @@ function LoginForm() {
           )}
         </form>
       </Card>
+      <p className="mt-4 text-center text-xs text-slate-500">Ao entrar, você concorda com os <a className="underline" href="/termos/">Termos</a> e a <a className="underline" href="/privacidade/">Política de Privacidade</a>.</p>
     </main>
   );
 }

@@ -315,6 +315,7 @@ function Ready({ tenantId, stayId, uid, onClosed }: { tenantId: string; stayId: 
             })}
           </section>
         )}
+        <p className="pt-2 text-center text-xs text-slate-500"><a className="underline" href="/privacidade/">Privacidade</a> · <a className="underline" href="/termos/">Termos</a></p>
       </div>
     </div>
   );

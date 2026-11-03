@@ -84,7 +84,11 @@ export interface TenantInfo {
   displayName?: string;
   status: string;
   planId: string;
+  limits?: { maxRooms?: number };
 }
+
+/** Limite de quartos quando a pousada ainda não tem limite definido pelo painel master. */
+export const DEFAULT_MAX_ROOMS = 10;
 
 export const TIMEZONES: { id: string; label: string }[] = [
   { id: "America/Sao_Paulo", label: "Brasília (UTC−3)" },

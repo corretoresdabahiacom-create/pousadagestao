@@ -7,7 +7,7 @@ import {
   initializeTestEnvironment,
   type RulesTestEnvironment,
 } from "@firebase/rules-unit-testing";
-import { deleteDoc, doc, getDoc, getDocs, collection, serverTimestamp, setDoc, updateDoc, writeBatch } from "firebase/firestore";
+import { Timestamp, deleteDoc, doc, getDoc, getDocs, collection, serverTimestamp, setDoc, updateDoc, writeBatch } from "firebase/firestore";
 
 let env: RulesTestEnvironment;
 
@@ -413,5 +413,180 @@ describe("portal do hóspede (QR Code)", () => {
     const g = await open("g-1");
     await assertFails(getDocs(collection(g, `tenants/${A}/stayAccess`)));
     await assertFails(deleteDoc(doc(staff(A, "owner"), `tenants/${A}/stayAccess/${HASH}`)));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fases 4–9: check-in, checkout, financeiro, limpeza, plano e suspensão
+// ---------------------------------------------------------------------------
+
+describe("check-in atômico (quarto + QR + hospedagem no mesmo lote)", () => {
+  const NEW = "c".repeat(64);
+  const checkin = (db: ReturnType<typeof staff>, room: string, over: { occupy?: boolean; hash?: string } = {}) => {
+    const b = writeBatch(db);
+    b.set(doc(db, `tenants/${A}/stayAccess/${NEW}`), { stayId: "s9", status: "active" });
+    if (over.occupy !== false) b.update(doc(db, `tenants/${A}/rooms/${room}`), { status: "occupied", currentStayId: "s9", updatedAt: serverTimestamp() });
+    b.set(doc(db, `tenants/${A}/stays/s9`), { status: "active", roomId: room, guestId: "g1", accessHash: over.hash ?? NEW, createdBy: `${A}-reception` });
+    return b.commit();
+  };
+
+  it("recepção faz check-in em quarto disponível", async () => {
+    await assertSucceeds(checkin(staff(A, "reception"), "r1"));
+  });
+  it("não permite check-in em quarto já ocupado (sem dupla reserva)", async () => {
+    await assertFails(checkin(staff(A, "reception"), "r2"));
+  });
+  it("não permite criar a hospedagem sem marcar o quarto como ocupado", async () => {
+    await assertFails(checkin(staff(A, "reception"), "r1", { occupy: false }));
+  });
+  it("não permite hospedagem apontando para um QR diferente do criado no lote", async () => {
+    await assertFails(checkin(staff(A, "reception"), "r1", { hash: "d".repeat(64) }));
+  });
+  it("financeiro e funcionário não fazem check-in", async () => {
+    await assertFails(checkin(staff(A, "finance"), "r1"));
+    await assertFails(checkin(staff(A, "staff"), "r1"));
+  });
+});
+
+describe("reemissão do QR Code", () => {
+  const NEW = "f".repeat(64);
+  it("com o código antigo revogado e o novo ativo no mesmo lote", async () => {
+    const db = staff(A, "reception");
+    const b = writeBatch(db);
+    b.update(doc(db, `tenants/${A}/stayAccess/${HASH}`), { status: "revoked" });
+    b.set(doc(db, `tenants/${A}/stayAccess/${NEW}`), { stayId: "s1", status: "active" });
+    b.update(doc(db, `tenants/${A}/stays/s1`), { accessHash: NEW });
+    await assertSucceeds(b.commit());
+  });
+  it("trocar o código sem revogar o antigo é negado", async () => {
+    const db = staff(A, "reception");
+    const b = writeBatch(db);
+    b.set(doc(db, `tenants/${A}/stayAccess/${NEW}`), { stayId: "s1", status: "active" });
+    b.update(doc(db, `tenants/${A}/stays/s1`), { accessHash: NEW });
+    await assertFails(b.commit());
+  });
+});
+
+describe("checkout em lote", () => {
+  beforeEach(async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await updateDoc(doc(ctx.firestore(), `tenants/${A}/rooms/r1`), { status: "occupied", currentStayId: "s1" });
+    });
+  });
+  const checkout = (db: ReturnType<typeof staff>, uid: string, over: { revoke?: boolean } = {}) => {
+    const b = writeBatch(db);
+    if (over.revoke !== false) b.update(doc(db, `tenants/${A}/stayAccess/${HASH}`), { status: "revoked" });
+    b.set(doc(db, `tenants/${A}/revenues/checkout-s1`), { kind: "stay_closing", grossCents: 60000, deductionsCents: 0, date: serverTimestamp(), createdBy: uid, lines: [] });
+    b.set(doc(db, `tenants/${A}/accountsReceivable/stay-s1`), { amountCents: 1000, receivedCents: 0, status: "open", createdBy: uid });
+    b.set(doc(db, `tenants/${A}/cleaningTasks/clean-s1`), { roomId: "r1", status: "pending", createdBy: uid });
+    b.set(doc(db, `tenants/${A}/cashEntries/stay-k1`), { kind: "in", amountCents: 500, at: serverTimestamp(), createdBy: uid });
+    b.update(doc(db, `tenants/${A}/rooms/r1`), { status: "awaiting_cleaning", currentStayId: null, updatedAt: serverTimestamp() });
+    b.update(doc(db, `tenants/${A}/stays/s1`), { status: "closed", checkedOutAt: serverTimestamp() });
+    return b.commit();
+  };
+  it("recepção encerra a hospedagem revogando o QR no mesmo lote", async () => {
+    await assertSucceeds(checkout(staff(A, "reception"), `${A}-reception`));
+  });
+  it("encerrar sem revogar o QR é negado", async () => {
+    await assertFails(checkout(staff(A, "reception"), `${A}-reception`, { revoke: false }));
+  });
+  it("funcionário não encerra hospedagem", async () => {
+    await assertFails(checkout(staff(A, "staff"), `${A}-staff`));
+  });
+  it("hospedagem encerrada não reabre", async () => {
+    await assertSucceeds(checkout(staff(A, "reception"), `${A}-reception`));
+    await assertFails(updateDoc(doc(staff(A, "reception"), `tenants/${A}/stays/s1`), { status: "active" }));
+  });
+});
+
+describe("caixa e razão financeiro", () => {
+  it("financeiro abre e fecha o caixa; recepção não abre", async () => {
+    const fin = staff(A, "finance");
+    await assertSucceeds(setDoc(doc(fin, `tenants/${A}/cashRegisters/c1`), { status: "open", openingCents: 1000, openedBy: `${A}-finance`, openedAt: serverTimestamp() }));
+    await assertFails(setDoc(doc(staff(A, "reception"), `tenants/${A}/cashRegisters/c2`), { status: "open", openingCents: 0, openedBy: `${A}-reception` }));
+    await assertSucceeds(updateDoc(doc(fin, `tenants/${A}/cashRegisters/c1`), { status: "closed", openingCents: 1000, countedCents: 900 }));
+  });
+  it("caixa fechado não reabre e a abertura não muda", async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), `tenants/${A}/cashRegisters/c3`), { status: "closed", openingCents: 100 });
+      await setDoc(doc(ctx.firestore(), `tenants/${A}/cashRegisters/c4`), { status: "open", openingCents: 100 });
+    });
+    const fin = staff(A, "finance");
+    await assertFails(updateDoc(doc(fin, `tenants/${A}/cashRegisters/c3`), { status: "open" }));
+    await assertFails(updateDoc(doc(fin, `tenants/${A}/cashRegisters/c4`), { status: "closed", openingCents: 99999 }));
+  });
+  it("lançamentos de caixa: criam-se com autoria e valor positivo, e nunca mudam", async () => {
+    const fin = staff(A, "finance");
+    const ok = { kind: "out", amountCents: 700, at: serverTimestamp(), createdBy: `${A}-finance` };
+    await assertSucceeds(setDoc(doc(fin, `tenants/${A}/cashEntries/e1`), ok));
+    await assertFails(setDoc(doc(fin, `tenants/${A}/cashEntries/e2`), { ...ok, amountCents: 0 }));
+    await assertFails(setDoc(doc(fin, `tenants/${A}/cashEntries/e3`), { ...ok, createdBy: "outro" }));
+    await assertFails(setDoc(doc(fin, `tenants/${A}/cashEntries/e4`), { ...ok, kind: "transfer" }));
+    await assertFails(updateDoc(doc(fin, `tenants/${A}/cashEntries/e1`), { amountCents: 1 }));
+    await assertFails(deleteDoc(doc(staff(A, "owner"), `tenants/${A}/cashEntries/e1`)));
+  });
+  it("funcionário e hóspede não leem nem gravam no financeiro", async () => {
+    await assertFails(getDocs(collection(staff(A, "staff"), `tenants/${A}/cashEntries`)));
+    await assertFails(setDoc(doc(staff(A, "staff"), `tenants/${A}/cashEntries/x`), { kind: "in", amountCents: 1, at: serverTimestamp(), createdBy: `${A}-staff` }));
+    const g = guest("g-fin");
+    await setDoc(doc(g, `tenants/${A}/stayAccess/${HASH}/sessions/g-fin`), { createdAt: serverTimestamp() });
+    await assertFails(getDocs(collection(g, `tenants/${A}/cashEntries`)));
+    await assertFails(getDocs(collection(g, `tenants/${A}/accountsPayable`)));
+  });
+  it("receitas reconhecidas são imutáveis", async () => {
+    const fin = staff(A, "finance");
+    const rev = { kind: "manual", grossCents: 1000, deductionsCents: 0, date: Timestamp.now(), createdBy: `${A}-finance` };
+    await assertSucceeds(setDoc(doc(fin, `tenants/${A}/revenues/r1`), rev));
+    await assertFails(updateDoc(doc(fin, `tenants/${A}/revenues/r1`), { grossCents: 1 }));
+    await assertFails(deleteDoc(doc(fin, `tenants/${A}/revenues/r1`)));
+  });
+  it("conta paga fica travada (valor não muda)", async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), `tenants/${A}/accountsPayable/ap2`), { amountCents: 5000, status: "paid", createdBy: "x" });
+    });
+    await assertFails(updateDoc(doc(staff(A, "finance"), `tenants/${A}/accountsPayable/ap2`), { amountCents: 1 }));
+    await assertSucceeds(updateDoc(doc(staff(A, "finance"), `tenants/${A}/accountsPayable/ap1`), { status: "paid" }));
+  });
+});
+
+describe("limpeza", () => {
+  it("funcionário segue aguardando → em limpeza → disponível, e só isso", async () => {
+    const st = staff(A, "staff");
+    await assertSucceeds(updateDoc(doc(st, `tenants/${A}/rooms/r3`), { status: "cleaning", updatedAt: serverTimestamp() }));
+    await assertSucceeds(updateDoc(doc(st, `tenants/${A}/rooms/r4`), { status: "available", updatedAt: serverTimestamp() }));
+    await assertFails(updateDoc(doc(st, `tenants/${A}/rooms/r1`), { status: "maintenance", updatedAt: serverTimestamp() }));
+    await assertFails(updateDoc(doc(st, `tenants/${A}/rooms/r2`), { status: "available", updatedAt: serverTimestamp() }));
+  });
+  it("recepção não altera o estado de limpeza do quarto", async () => {
+    await assertFails(updateDoc(doc(staff(A, "reception"), `tenants/${A}/rooms/r3`), { status: "cleaning", updatedAt: serverTimestamp() }));
+  });
+});
+
+describe("planos, limites e suspensão", () => {
+  it("proprietário não altera plano, status nem limites", async () => {
+    const o = staff(A, "owner");
+    await assertFails(updateDoc(doc(o, `tenants/${A}`), { planId: "premium" }));
+    await assertFails(updateDoc(doc(o, `tenants/${A}`), { status: "active", limits: { maxRooms: 999 } }));
+  });
+  it("não é possível criar a pousada já com limites próprios", async () => {
+    const db = env.authenticatedContext("u-lim", { email_verified: true }).firestore();
+    const b = writeBatch(db);
+    b.set(doc(db, "tenants/lim"), { name: "L", ownerUid: "u-lim", planId: "trial", status: "trial", limits: { maxRooms: 999 } });
+    b.set(doc(db, "tenants/lim/members/u-lim"), { role: "owner", active: true });
+    await assertFails(b.commit());
+  });
+  it("administrador da plataforma altera plano e suspende; os demais não", async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => { await setDoc(doc(ctx.firestore(), "platformAdmins/root"), { x: 1 }); });
+    const root = env.authenticatedContext("root", { email_verified: true }).firestore();
+    await assertSucceeds(updateDoc(doc(root, `tenants/${A}`), { planId: "premium", limits: { maxRooms: 50 } }));
+    await assertSucceeds(updateDoc(doc(root, `tenants/${A}`), { status: "suspended" }));
+    await assertFails(updateDoc(doc(staff(B, "owner"), `tenants/${B}`), { status: "suspended" }));
+  });
+  it("pousada suspensa também derruba o acesso do hóspede", async () => {
+    const g = guest("g-susp");
+    await setDoc(doc(g, `tenants/${A}/stayAccess/${HASH}/sessions/g-susp`), { createdAt: serverTimestamp() });
+    await assertSucceeds(getDoc(doc(g, `tenants/${A}/stays/s1`)));
+    await env.withSecurityRulesDisabled(async (ctx) => { await updateDoc(doc(ctx.firestore(), `tenants/${A}`), { status: "suspended" }); });
+    await assertFails(getDoc(doc(g, `tenants/${A}/stays/s1`)));
   });
 });

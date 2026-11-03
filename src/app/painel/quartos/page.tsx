@@ -9,6 +9,7 @@ import { useRooms } from "@/lib/useRooms";
 import { centsToInput, formatCents, parseBRLToCents } from "@/lib/money";
 import {
   ROOM_CATEGORIES,
+  DEFAULT_MAX_ROOMS,
   ROOM_STATUS_LABELS,
   ROOM_STATUS_STYLES,
   isManager,
@@ -49,7 +50,8 @@ const categoryLabel = (id: string) => ROOM_CATEGORIES.find((c) => c.id === id)?.
 const MANUAL: RoomStatus[] = ["available", "maintenance", "blocked"];
 
 export default function RoomsPage() {
-  const { user, membership } = useAuth();
+  const { user, membership, tenant } = useAuth();
+  const maxRooms = tenant?.limits?.maxRooms ?? DEFAULT_MAX_ROOMS;
   const tenantId = membership?.tenantId;
   const canEdit = isManager(membership?.role);
   const { rooms, error } = useRooms(tenantId);
@@ -97,6 +99,7 @@ export default function RoomsPage() {
     }
   }
 
+  const atLimit = rooms.filter((r) => !r.archived).length >= maxRooms;
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -106,8 +109,9 @@ export default function RoomsPage() {
             {rooms.filter((r) => !r.archived).length} quarto(s) ativo(s)
           </p>
         </div>
-        {canEdit && <Button onClick={() => setEditing("new")}>Novo quarto</Button>}
+        {canEdit && <Button disabled={atLimit} onClick={() => setEditing("new")}>Novo quarto</Button>}
       </div>
+      {atLimit && <Alert kind="info">Seu plano permite até {maxRooms} quartos. Para cadastrar mais, fale com o suporte para ampliar o plano.</Alert>}
 
       <div className="flex flex-wrap items-center gap-3">
         <div className="w-full sm:w-64">

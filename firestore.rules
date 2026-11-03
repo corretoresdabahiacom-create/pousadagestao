@@ -49,6 +49,7 @@ service cloud.firestore {
     // Sessão do hóspede: existe sessions/{uid} sob o hash E o acesso segue ativo (não revogado).
     function guestHas(t, h, s) {
       return authed()
+        && get(tPath(t)).data.status in ['trial', 'active']
         && exists(sessionPath(t, h))
         && get(accessPath(t, h)).data.status == 'active'
         && get(accessPath(t, h)).data.stayId == s;
@@ -88,6 +89,7 @@ service cloud.firestore {
         && request.resource.data.ownerUid == request.auth.uid
         && request.resource.data.status == 'trial'
         && request.resource.data.planId == 'trial'
+        && !request.resource.data.keys().hasAny(['limits'])
         && getAfter(memberPath(t)).data.role == 'owner';
 
       // Proprietário edita dados; plano, status, limites e ownerUid ficam protegidos.

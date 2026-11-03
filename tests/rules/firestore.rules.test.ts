@@ -7,7 +7,7 @@ import {
   initializeTestEnvironment,
   type RulesTestEnvironment,
 } from "@firebase/rules-unit-testing";
-import { deleteDoc, doc, getDoc, getDocs, collection, serverTimestamp, setDoc, updateDoc } from "firebase/firestore";
+import { deleteDoc, doc, getDoc, getDocs, collection, serverTimestamp, setDoc, updateDoc, writeBatch } from "firebase/firestore";
 
 let env: RulesTestEnvironment;
 
@@ -397,8 +397,11 @@ describe("portal do hóspede (QR Code)", () => {
     const NEW = "e".repeat(64);
     const rec = staff(A, "reception");
     await assertSucceeds(updateDoc(doc(rec, `tenants/${A}/stayAccess/${HASH}`), { status: "revoked" }));
-    await assertSucceeds(setDoc(doc(rec, `tenants/${A}/stayAccess/${NEW}`), { stayId: "s2", status: "active" }));
-    await assertSucceeds(setDoc(doc(rec, `tenants/${A}/stays/s2`), { status: "active", roomId: "r1", guestId: "g1", accessHash: NEW, createdBy: `${A}-reception` }));
+    const b = writeBatch(rec);
+    b.set(doc(rec, `tenants/${A}/stayAccess/${NEW}`), { stayId: "s2", status: "active" });
+    b.update(doc(rec, `tenants/${A}/rooms/r1`), { status: "occupied", currentStayId: "s2", updatedAt: serverTimestamp() });
+    b.set(doc(rec, `tenants/${A}/stays/s2`), { status: "active", roomId: "r1", guestId: "g1", accessHash: NEW, createdBy: `${A}-reception` });
+    await assertSucceeds(b.commit());
     const velho = guest("g-old");
     await assertFails(setDoc(doc(velho, `tenants/${A}/stayAccess/${HASH}/sessions/g-old`), { x: 1 }));
     const novo = await open("g-new", NEW);

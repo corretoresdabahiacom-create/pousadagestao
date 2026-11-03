@@ -24,10 +24,23 @@ export default function PainelLayout({ children }: { children: ReactNode }) {
 
   if (loading || !user || !membership || !tenant) return <Spinner />;
 
-  const manager = isManager(membership.role);
+  const role = membership.role;
+  const manager = isManager(role);
+  const front = role === "owner" || role === "admin" || role === "reception";
+  const money = role === "owner" || role === "admin" || role === "finance";
+  const ops = front || role === "staff";
   const nav = [
     { href: "/painel/", label: "Início", show: true },
+    { href: "/painel/checkin/", label: "Check-in", show: front },
+    { href: "/painel/hospedagens/", label: "Hospedagens", show: front || role === "finance" },
+    { href: "/painel/calendario/", label: "Calendário", show: front },
+    { href: "/painel/chat/", label: "Chat", show: front },
+    { href: "/painel/hospedes/", label: "Hóspedes", show: front },
     { href: "/painel/quartos/", label: "Quartos", show: true },
+    { href: "/painel/limpeza/", label: "Limpeza", show: ops },
+    { href: "/painel/manutencao/", label: "Manutenção", show: ops },
+    { href: "/painel/financeiro/", label: "Financeiro", show: money },
+    { href: "/painel/relatorios/", label: "Relatórios", show: money },
     { href: "/painel/personalizar/", label: "Personalizar", show: manager },
     { href: "/painel/equipe/", label: "Equipe", show: manager },
   ].filter((n) => n.show);

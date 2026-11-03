@@ -15,6 +15,7 @@ service cloud.firestore {
     // ---------------- Caminhos ----------------
     function tPath(t) { return /databases/$(database)/documents/tenants/$(t); }
     function memberPath(t) { return /databases/$(database)/documents/tenants/$(t)/members/$(request.auth.uid); }
+    function roomPath(t, r) { return /databases/$(database)/documents/tenants/$(t)/rooms/$(r); }
     function stayPath(t, s) { return /databases/$(database)/documents/tenants/$(t)/stays/$(s); }
     function accessPath(t, h) { return /databases/$(database)/documents/tenants/$(t)/stayAccess/$(h); }
     function sessionPath(t, h) { return /databases/$(database)/documents/tenants/$(t)/stayAccess/$(h)/sessions/$(request.auth.uid); }
@@ -106,7 +107,9 @@ service cloud.firestore {
           && request.resource.data.get('logoDataUrl', '').size() < 300000
           && request.resource.data.get('brandColor', '#000000').matches('^#[0-9a-fA-F]{6}$')
           && request.resource.data.get('mapsUrl', '').size() <= 500
-          && request.resource.data.get('description', '').size() <= 600;
+          && request.resource.data.get('description', '').size() <= 600
+          && request.resource.data.get('checkoutReminderText', '').size() <= 500
+          && request.resource.data.get('paymentInfo', '').size() <= 500;
       }
 
       // Galeria (pousada, quartos, refeitório, garagem…). Conteúdo de divulgação:
@@ -205,19 +208,36 @@ service cloud.firestore {
           || (authed() && guestHas(t, resource.data.accessHash, stayId));
         allow list: if canFrontDesk(t) || canFinance(t);
 
+        // Check-in: o quarto precisa estar disponível e passa a ocupado, no mesmo lote.
+        // Isso impede duas hospedagens simultâneas no mesmo quarto mesmo em concorrência.
         allow create: if canFrontDesk(t)
           && request.resource.data.status == 'active'
           && request.resource.data.createdBy == request.auth.uid
           && request.resource.data.accessHash is string
-          && request.resource.data.accessHash.size() == 64;
+          && request.resource.data.accessHash.size() == 64
+          && get(roomPath(t, request.resource.data.roomId)).data.status == 'available'
+          && getAfter(roomPath(t, request.resource.data.roomId)).data.status == 'occupied'
+          && getAfter(roomPath(t, request.resource.data.roomId)).data.currentStayId == stayId
+          && getAfter(accessPath(t, request.resource.data.accessHash)).data.stayId == stayId;
 
-        // Campos de vínculo e QR são imutáveis; hospedagem encerrada não reabre.
+        // Quarto, hóspede e autoria são imutáveis; hospedagem encerrada não reabre.
+        // O código do QR só muda na reemissão (o antigo é revogado no mesmo lote) e o
+        // encerramento só é aceito junto com a revogação do código.
         allow update: if canFrontDesk(t)
           && resource.data.status == 'active'
           && request.resource.data.roomId == resource.data.roomId
           && request.resource.data.guestId == resource.data.guestId
-          && request.resource.data.accessHash == resource.data.accessHash
-          && request.resource.data.createdBy == resource.data.createdBy;
+          && request.resource.data.createdBy == resource.data.createdBy
+          && (request.resource.data.status == 'active'
+              || (request.resource.data.status == 'closed'
+                  && getAfter(accessPath(t, resource.data.accessHash)).data.status == 'revoked'))
+          && (request.resource.data.accessHash == resource.data.accessHash
+              || (request.resource.data.accessHash is string
+                  && request.resource.data.accessHash.size() == 64
+                  && request.resource.data.status == 'active'
+                  && getAfter(accessPath(t, resource.data.accessHash)).data.status == 'revoked'
+                  && getAfter(accessPath(t, request.resource.data.accessHash)).data.status == 'active'
+                  && getAfter(accessPath(t, request.resource.data.accessHash)).data.stayId == stayId));
         allow delete: if false;
 
         match /companions/{id} {
@@ -316,18 +336,50 @@ service cloud.firestore {
       }
 
       // ---- Financeiro ----
+      // Caixa: sessões de abertura/fechamento. O saldo esperado é calculado a partir de cashEntries.
       match /cashRegisters/{id} {
         allow read: if canFinance(t);
-        allow create, update: if canFinance(t);
+        allow create: if canFinance(t)
+          && request.resource.data.status == 'open'
+          && request.resource.data.openedBy == request.auth.uid
+          && request.resource.data.openingCents is int && request.resource.data.openingCents >= 0;
+        allow update: if canFinance(t)
+          && resource.data.status == 'open'
+          && request.resource.data.status == 'closed'
+          && request.resource.data.openingCents == resource.data.openingCents;
         allow delete: if false;
-        match /movements/{mid} {
-          allow read: if canFinance(t);
-          allow create: if canMoney(t)
-            && request.resource.data.createdBy == request.auth.uid
-            && request.resource.data.amountCents is int && request.resource.data.amountCents > 0;
-          allow update, delete: if false;
-        }
       }
+
+      // Razão de caixa (regime de caixa): cada entrada/saída efetiva de dinheiro.
+      // Imutável; o ID do documento é a chave de idempotência. Estorno = novo lançamento.
+      match /cashEntries/{id} {
+        allow read: if canFinance(t);
+        allow create: if canMoney(t)
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.amountCents is int && request.resource.data.amountCents > 0
+          && request.resource.data.kind in ['in', 'out']
+          && request.resource.data.at is timestamp;
+        allow update, delete: if false;
+      }
+
+      // Receitas reconhecidas (regime de competência): um documento por fechamento de hospedagem
+      // (ou lançamento manual), com as linhas por categoria. Imutáveis.
+      match /revenues/{id} {
+        allow read: if canFinance(t);
+        allow create: if canMoney(t)
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.kind in ['stay_closing', 'manual']
+          && request.resource.data.grossCents is int && request.resource.data.grossCents >= 0
+          && request.resource.data.deductionsCents is int && request.resource.data.deductionsCents >= 0
+          && request.resource.data.date is timestamp;
+        allow update, delete: if false;
+      }
+
+      match /recurringExpenses/{id} {
+        allow read: if canFinance(t);
+        allow write: if canFinance(t);
+      }
+
       match /accountsPayable/{id} {
         allow read: if canFinance(t);
         allow create: if canFinance(t) && request.resource.data.createdBy == request.auth.uid;

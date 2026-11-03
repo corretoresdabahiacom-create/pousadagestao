@@ -74,7 +74,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const apply = useCallback(async (u: User | null) => {
     setUser(u);
     setEmailVerified(u?.emailVerified ?? false);
-    if (!u) {
+    // Hóspede (login anônimo do portal) nunca tem vínculo com a equipe.
+    if (!u || u.isAnonymous) {
       setMembership(null);
       setTenant(null);
       return;

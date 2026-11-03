@@ -233,7 +233,7 @@ function paymentWrites(
         method: p.method,
         source: "stay",
         stayId,
-        category: "hospedagem",
+        category: "Hospedagem",
         description: `${p.kind === "payment" ? "Recebimento" : "Estorno"} — ${stayLabel}`,
         createdBy: uid,
         at: serverTimestamp(),

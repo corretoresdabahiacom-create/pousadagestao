@@ -1,16 +1,31 @@
 "use client";
 
+import { useMemo } from "react";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/AuthProvider";
 import { useRooms } from "@/lib/useRooms";
-import { ROOM_STATUS_LABELS, type RoomStatus } from "@/lib/types";
+import { type RoomStatus } from "@/lib/types";
+import { useActiveStays } from "@/lib/useStays";
+import { useCashEntries, usePayables, useReceivables } from "@/lib/finance";
+import { useNow } from "@/lib/useNow";
+import { DAY_MS, fmtDateTime, startOfDay } from "@/lib/format";
+import { formatCents } from "@/lib/money";
 import { Alert, Card, EmptyState, Spinner } from "@/components/ui";
 
-// Só mostra indicadores que já têm dados reais. Os demais (financeiro, hóspedes)
-// entram nas próximas fases, para nunca exibir números fictícios.
+// Só mostra indicadores calculados de dados reais. Cartões financeiros só para quem tem acesso ao financeiro.
 export default function DashboardPage() {
   const { membership, tenant } = useAuth();
-  const { rooms, error } = useRooms(membership?.tenantId);
+  const t = membership?.tenantId;
+  const role = membership?.role ?? "";
+  const isFin = ["owner", "admin", "finance"].includes(role);
+  const hasStays = ["owner", "admin", "reception", "finance"].includes(role);
+  const { rooms, error } = useRooms(t);
+  const act = useActiveStays(hasStays ? t : undefined);
+  const now = useNow(60000);
+  const since = useMemo(() => { const d = startOfDay(new Date()); d.setDate(d.getDate() - 6); return d; }, []);
+  const cash = useCashEntries(isFin ? t : undefined, since);
+  const pays = usePayables(isFin ? t : undefined);
+  const recv = useReceivables(isFin ? t : undefined);
 
   if (error) return <Alert>{error}</Alert>;
   if (!rooms) return <Spinner />;
@@ -64,20 +79,62 @@ export default function DashboardPage() {
         </div>
       )}
 
-      <Card>
-        <h2 className="mb-2 text-base font-semibold">Em construção</h2>
-        <p className="text-sm text-slate-600">
-          Hóspedes, check-in, financeiro e DRE chegam nas próximas etapas. Os indicadores aparecem aqui assim que houver
-          dados reais.
-        </p>
-        <ul className="mt-3 flex flex-wrap gap-2 text-xs text-slate-600">
-          {(Object.keys(ROOM_STATUS_LABELS) as RoomStatus[]).map((s) => (
-            <li key={s} className="rounded-full bg-slate-100 px-2.5 py-1">
-              {ROOM_STATUS_LABELS[s]}: {count(s)}
-            </li>
-          ))}
-        </ul>
-      </Card>
+      {hasStays && act.stays && (
+        <Card>
+          <h2 className="mb-2 text-base font-semibold">Hospedagens ativas ({act.stays.length})</h2>
+          {act.stays.length === 0 ? <p className="text-sm text-slate-500">Nenhum hóspede na casa agora.</p> : (
+            <ul className="divide-y divide-slate-100 text-sm">
+              {act.stays.slice(0, 8).map((s) => {
+                const left = s.plannedCheckOutAt.getTime() - now;
+                return (
+                  <li key={s.id} className="flex flex-wrap justify-between gap-2 py-2">
+                    <Link href={`/painel/hospedagem/?id=${s.id}`} className="font-medium text-brand-700 hover:underline">Quarto {s.roomNumber} · {s.guestName}</Link>
+                    <span className={left < 0 ? "font-medium text-red-700" : left < 2 * 3600000 ? "font-medium text-amber-700" : "text-slate-600"}>{left < 0 ? "Passou do horário · " : "Saída prevista · "}{fmtDateTime(s.plannedCheckOutAt)}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </Card>
+      )}
+
+      {isFin && cash.data && pays.data && recv.data && (
+        <>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Card><p className="text-sm text-slate-600">Entradas (últimos 7 dias)</p><p className="mt-1 text-2xl font-bold text-emerald-700">{formatCents(cash.data.filter((e) => e.kind === "in" && !e.transfer).reduce((x, e) => x + e.amountCents, 0))}</p></Card>
+            <Card><p className="text-sm text-slate-600">Contas a pagar vencidas</p><p className="mt-1 text-2xl font-bold text-red-700">{formatCents(pays.data.filter((p) => p.status === "open" && p.dueDate.getTime() < now).reduce((x, p) => x + p.amountCents, 0))}</p></Card>
+            <Card><p className="text-sm text-slate-600">A receber (em aberto)</p><p className="mt-1 text-2xl font-bold">{formatCents(recv.data.filter((r) => r.status === "open").reduce((x, r) => x + r.amountCents - r.receivedCents, 0))}</p></Card>
+          </div>
+          <FlowChart entries={cash.data} since={since} />
+        </>
+      )}
     </div>
+  );
+}
+
+/** Entradas × saídas por dia (7 dias), em SVG simples e acessível. */
+function FlowChart({ entries, since }: { entries: { kind: "in" | "out"; amountCents: number; at: Date; transfer: boolean }[]; since: Date }) {
+  const days = Array.from({ length: 7 }, (_, i) => new Date(since.getTime() + i * DAY_MS));
+  const data = days.map((d) => {
+    const end = d.getTime() + DAY_MS;
+    const e = entries.filter((x) => !x.transfer && x.at.getTime() >= d.getTime() && x.at.getTime() < end);
+    return { d, inn: e.filter((x) => x.kind === "in").reduce((s, x) => s + x.amountCents, 0), out: e.filter((x) => x.kind === "out").reduce((s, x) => s + x.amountCents, 0) };
+  });
+  const max = Math.max(1, ...data.flatMap((x) => [x.inn, x.out]));
+  const H = 120;
+  return (
+    <Card>
+      <h2 className="mb-2 text-base font-semibold">Caixa dos últimos 7 dias</h2>
+      <svg viewBox="0 0 350 160" role="img" aria-label="Entradas e saídas por dia" className="w-full max-w-xl">
+        {data.map((x, i) => (
+          <g key={i} transform={`translate(${i * 50 + 5} 0)`}>
+            <rect x="4" y={H - (x.inn / max) * H + 5} width="16" height={(x.inn / max) * H} fill="#059669"><title>{`Entradas ${formatCents(x.inn)}`}</title></rect>
+            <rect x="22" y={H - (x.out / max) * H + 5} width="16" height={(x.out / max) * H} fill="#dc2626"><title>{`Saídas ${formatCents(x.out)}`}</title></rect>
+            <text x="21" y="148" textAnchor="middle" fontSize="10" fill="#475569">{x.d.getDate()}/{x.d.getMonth() + 1}</text>
+          </g>
+        ))}
+      </svg>
+      <p className="mt-1 flex gap-4 text-xs text-slate-600"><span><span className="mr-1 inline-block h-2.5 w-2.5 bg-emerald-600" />Entradas</span><span><span className="mr-1 inline-block h-2.5 w-2.5 bg-red-600" />Saídas</span></p>
+    </Card>
   );
 }

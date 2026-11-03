@@ -21,8 +21,6 @@ const empty: TenantForm = {
   state: "BA",
   zip: "",
   timezone: "America/Sao_Paulo",
-  checkInTime: "14:00",
-  checkOutTime: "12:00",
 };
 
 export default function OnboardingPage() {
@@ -170,8 +168,8 @@ export default function OnboardingPage() {
             </div>
           </Card>
 
-          <Card className="grid gap-4 sm:grid-cols-3">
-            <Field label="Fuso horário">
+          <Card className="grid gap-4 sm:grid-cols-2">
+            <Field label="Fuso horário" hint="A pousada funciona 24 horas: a diária conta 24 horas a partir da entrada do hóspede.">
               <Select value={form.timezone} onChange={set("timezone")}>
                 {TIMEZONES.map((t) => (
                   <option key={t.id} value={t.id}>
@@ -179,12 +177,6 @@ export default function OnboardingPage() {
                   </option>
                 ))}
               </Select>
-            </Field>
-            <Field label="Horário padrão de check-in">
-              <Input type="time" value={form.checkInTime} onChange={set("checkInTime")} required />
-            </Field>
-            <Field label="Horário padrão de checkout">
-              <Input type="time" value={form.checkOutTime} onChange={set("checkOutTime")} required />
             </Field>
           </Card>
 

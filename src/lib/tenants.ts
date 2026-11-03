@@ -21,8 +21,6 @@ export interface TenantForm {
   state: string;
   zip: string;
   timezone: string;
-  checkInTime: string;
-  checkOutTime: string;
 }
 
 /**
@@ -73,8 +71,7 @@ export async function createTenant(user: User, f: TenantForm): Promise<string> {
     zip: f.zip.trim(),
     timezone: f.timezone,
     currency: "BRL",
-    checkInTime: f.checkInTime,
-    checkOutTime: f.checkOutTime,
+    stayHours: 24, // pousada 24h: a diária fecha a cada 24 horas da entrada
     checkoutReminderText:
       "Olá! Lembramos que seu horário de checkout está próximo. Esperamos que tenha aproveitado sua estadia!",
     updatedAt: serverTimestamp(),
@@ -86,8 +83,6 @@ export async function createTenant(user: User, f: TenantForm): Promise<string> {
     address: f.address.trim(),
     city: f.city.trim(),
     state: f.state,
-    checkInTime: f.checkInTime,
-    checkOutTime: f.checkOutTime,
     updatedAt: serverTimestamp(),
   });
   b2.set(doc(collection(db, `tenants/${t}/auditLogs`)), {

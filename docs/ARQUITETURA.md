@@ -111,3 +111,7 @@ Se uma pousada ou o SaaS crescer: Cloud Functions para check-in/checkout no serv
 10. Segurança, testes e produção
 
 Nenhuma fase é marcada como concluída sem testes passando.
+
+## Regra da diária (pousada 24h)
+
+Não há horário fixo de check-in/checkout. Cada hospedagem tem entrada em qualquer horário e a diária fecha a cada 24 horas contadas da entrada (`settings.stayHours = 24`). Os lembretes de saída (2h e 30min antes) serão calculados a partir do fim do período de 24h de cada hospedagem.

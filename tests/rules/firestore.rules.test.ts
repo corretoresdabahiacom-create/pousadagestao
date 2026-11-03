@@ -109,7 +109,7 @@ describe("cadastro da pousada e convites", () => {
     b.set(doc(db, "users/novo"), { tenantId: "nova" });
     await assertSucceeds(b.commit());
     const b2 = writeBatch(db);
-    b2.set(doc(db, "tenants/nova/settings/main"), { checkInTime: "14:00" });
+    b2.set(doc(db, "tenants/nova/settings/main"), { stayHours: 24 });
     b2.set(doc(db, "tenants/nova/publicInfo/main"), { displayName: "Nova" });
     b2.set(doc(collection(db, "tenants/nova/auditLogs")), { actorUid: "novo", at: serverTimestamp(), action: "tenant.create" });
     await assertSucceeds(b2.commit());

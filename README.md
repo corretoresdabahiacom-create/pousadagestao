@@ -1,36 +1,47 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# PousadaGestor
 
-## Getting Started
+Sistema de gestão de pousadas (SaaS multi-pousada) em Next.js + Firebase, no **plano gratuito (Spark)**.
+O nome do produto é provisório e fica em `src/config/brand.ts`.
 
-First, run the development server:
+Arquitetura e decisões: `docs/ARQUITETURA.md`.
+
+## Rodar localmente
+
+Requisitos: Node.js LTS e Java 21+ (só para os testes das regras).
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install --legacy-peer-deps
+cp .env.example .env.local   # preencha com a configuração do app web do Firebase
+npm run dev                  # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Com `NEXT_PUBLIC_USE_EMULATORS=false` o app usa o projeto Firebase real.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Testes das regras de segurança
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run test:rules
+```
 
-## Learn More
+Sobe o emulador do Firestore e roda `tests/rules`. Rode sempre antes de publicar regras.
 
-To learn more about Next.js, take a look at the following resources:
+## Publicar
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+npx firebase login
+npx firebase deploy --only firestore:rules --project pousadagestao-2f344   # regras
+npm run build                                                              # gera a pasta out/
+npx firebase deploy --only hosting --project pousadagestao-2f344           # site
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Estado atual
 
-## Deploy on Vercel
+Feito: login, criação da pousada (onboarding), convites da equipe com papéis, quartos (cadastro, edição,
+arquivamento, situação), painel inicial com dados reais, regras de segurança testadas.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Próximo: hóspedes, check-in e QR Code; portal do hóspede e chat; consumo e checkout; financeiro e DRE.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Limitações do plano gratuito
+
+Sem Cloud Functions: a autorização e a validação ficam nas Security Rules; não há push com o navegador fechado;
+fotos de quartos e anexos dependem de Cloud Storage (pode exigir plano Blaze). Detalhes em `docs/ARQUITETURA.md`.

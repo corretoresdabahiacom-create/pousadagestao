@@ -1,0 +1,10 @@
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
+
+# Portal do hóspede (QR Code): nunca enviar a URL como referência nem guardar em cache.
+/h/*
+  Referrer-Policy: no-referrer
+  Cache-Control: no-store

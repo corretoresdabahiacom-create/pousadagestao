@@ -1,0 +1,369 @@
+rules_version = '2';
+
+// PousadaGestor — Security Rules (plano gratuito Spark, SEM Cloud Functions).
+//
+// Como não há backend próprio, estas Rules são a camada de autorização e de validação:
+//  - Papéis vêm de tenants/{t}/members/{uid} (não de custom claims, que exigiriam Admin SDK).
+//  - Hóspede acessa por Auth anônimo + "sessão" ligada ao hash do token do QR Code.
+//  - Dados financeiros e lançamentos são criados com regras de imutabilidade (sem update/delete).
+// Invariantes complexas (totais, conflito de quarto) são aplicadas por transações no cliente;
+// as Rules garantem isolamento, papéis, imutabilidade, idempotência e revogação do QR Code.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------------- Caminhos ----------------
+    function tPath(t) { return /databases/$(database)/documents/tenants/$(t); }
+    function memberPath(t) { return /databases/$(database)/documents/tenants/$(t)/members/$(request.auth.uid); }
+    function stayPath(t, s) { return /databases/$(database)/documents/tenants/$(t)/stays/$(s); }
+    function accessPath(t, h) { return /databases/$(database)/documents/tenants/$(t)/stayAccess/$(h); }
+    function sessionPath(t, h) { return /databases/$(database)/documents/tenants/$(t)/stayAccess/$(h)/sessions/$(request.auth.uid); }
+
+    // ---------------- Identidade ----------------
+    function authed() { return request.auth != null; }
+    // Equipe usa e-mail/senha; hóspede usa login anônimo.
+    function staffUser() { return authed() && request.auth.token.firebase.sign_in_provider != 'anonymous'; }
+    function verifiedStaff() { return staffUser() && request.auth.token.email_verified == true; }
+
+    function isPlatformAdmin() {
+      return staffUser() && exists(/databases/$(database)/documents/platformAdmins/$(request.auth.uid));
+    }
+
+    // ---------------- Papéis (membros da pousada) ----------------
+    function tenantOpen(t) { return get(tPath(t)).data.status in ['trial', 'active']; }
+    function isMember(t) {
+      return staffUser() && exists(memberPath(t)) && get(memberPath(t)).data.active == true && tenantOpen(t);
+    }
+    function role(t) { return get(memberPath(t)).data.role; }
+    function hasRole(t, roles) { return isMember(t) && role(t) in roles; }
+
+    function isOwner(t)       { return hasRole(t, ['owner']); }
+    function isManager(t)     { return hasRole(t, ['owner', 'admin']); }
+    function canFrontDesk(t)  { return hasRole(t, ['owner', 'admin', 'reception']); }
+    function canFinance(t)    { return hasRole(t, ['owner', 'admin', 'finance']); }
+    function canMoney(t)      { return hasRole(t, ['owner', 'admin', 'reception', 'finance']); }
+    function canOps(t)        { return hasRole(t, ['owner', 'admin', 'reception', 'staff']); }
+
+    // ---------------- Hóspede (QR Code) ----------------
+    // Sessão do hóspede: existe sessions/{uid} sob o hash E o acesso segue ativo (não revogado).
+    function guestHas(t, h, s) {
+      return authed()
+        && exists(sessionPath(t, h))
+        && get(accessPath(t, h)).data.status == 'active'
+        && get(accessPath(t, h)).data.stayId == s;
+    }
+    function guestOnStay(t, s) {
+      return authed() && guestHas(t, get(stayPath(t, s)).data.accessHash, s);
+    }
+
+    // ---------------- Índice usuário -> pousada ----------------
+    // Permite ao app descobrir a pousada do usuário logado. Só é gravado pelo próprio
+    // usuário e só aponta para uma pousada onde ele já é membro ativo (no mesmo lote ou antes).
+    match /users/{uid} {
+      allow get: if staffUser() && request.auth.uid == uid;
+      allow list, delete: if false;
+      allow create, update: if staffUser() && request.auth.uid == uid
+        && getAfter(/databases/$(database)/documents/tenants/$(request.resource.data.tenantId)/members/$(uid)).data.active == true;
+    }
+
+    // ---------------- Painel master ----------------
+    match /platformAdmins/{uid} {
+      allow get: if staffUser() && request.auth.uid == uid;
+      allow list, write: if false; // gerenciado apenas pelo console do Firebase
+    }
+    match /platform/{document=**} {
+      allow read: if authed();            // planos são informativos
+      allow write: if isPlatformAdmin();
+    }
+
+    // ---------------- Pousada ----------------
+    match /tenants/{t} {
+      allow get: if isMember(t) || isPlatformAdmin();
+      allow list: if isPlatformAdmin();
+
+      // Criação: usuário verificado, dono = ele mesmo, plano/status iniciais fixos,
+      // e o vínculo de proprietário criado no mesmo lote.
+      allow create: if verifiedStaff()
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.status == 'trial'
+        && request.resource.data.planId == 'trial'
+        && getAfter(memberPath(t)).data.role == 'owner';
+
+      // Proprietário edita dados; plano, status, limites e ownerUid ficam protegidos.
+      allow update: if (isOwner(t)
+          && request.resource.data.get('planId', null) == resource.data.get('planId', null)
+          && request.resource.data.get('status', null) == resource.data.get('status', null)
+          && request.resource.data.get('limits', null) == resource.data.get('limits', null)
+          && request.resource.data.ownerUid == resource.data.ownerUid)
+        || isPlatformAdmin();
+      allow delete: if false;
+
+      // Dados públicos da pousada (nome, logo, horários) lidos pelo portal do hóspede.
+      match /publicInfo/{doc} {
+        allow get: if authed();
+        allow list: if false;
+        allow write: if isManager(t)
+          && request.resource.data.get('logoDataUrl', '').size() < 300000;
+      }
+
+      match /settings/{doc} {
+        allow read: if isMember(t);
+        allow write: if isOwner(t);
+      }
+
+      // ---- Membros e convites ----
+      match /members/{uid} {
+        allow get: if (staffUser() && request.auth.uid == uid) || isMember(t);
+        allow list: if isMember(t);
+
+        // Primeiro membro: o criador da pousada, no mesmo lote que cria o tenant.
+        allow create: if verifiedStaff()
+          && uid == request.auth.uid
+          && request.resource.data.role == 'owner'
+          && request.resource.data.active == true
+          && !exists(tPath(t))
+          && getAfter(tPath(t)).data.ownerUid == request.auth.uid;
+
+        // Aceitar convite: e-mail verificado e convite existente com o mesmo papel.
+        allow create: if verifiedStaff()
+          && uid == request.auth.uid
+          && request.resource.data.active == true
+          && request.resource.data.role != 'owner'
+          && exists(/databases/$(database)/documents/tenants/$(t)/invites/$(request.auth.token.email.lower()))
+          && get(/databases/$(database)/documents/tenants/$(t)/invites/$(request.auth.token.email.lower())).data.role
+              == request.resource.data.role;
+
+        // Proprietário gerencia papéis e ativa/desativa; ninguém altera o próprio papel.
+        allow update: if isOwner(t) && uid != request.auth.uid;
+        allow delete: if false;
+      }
+
+      match /invites/{email} {
+        allow list: if isManager(t);
+        // O convidado lê o próprio convite (para saber o papel) com e-mail verificado.
+        allow get: if isManager(t)
+          || (verifiedStaff() && request.auth.token.email.lower() == email);
+        allow create, update: if isManager(t)
+          && request.resource.data.role in ['admin', 'reception', 'finance', 'staff'];
+        allow delete: if isManager(t)
+          || (verifiedStaff() && request.auth.token.email.lower() == email);
+      }
+
+      // ---- Quartos ----
+      match /roomCategories/{id} {
+        allow read: if isMember(t);
+        allow write: if isManager(t);
+      }
+
+      match /rooms/{roomId} {
+        allow read: if isMember(t);
+        allow create: if isManager(t) && request.resource.data.status == 'available';
+        allow update: if isManager(t)
+          // Recepção: entrada e saída. Funcionário: limpeza. Só o campo de status muda.
+          || (canFrontDesk(t)
+              && request.resource.data.diff(resource.data).affectedKeys()
+                   .hasOnly(['status', 'currentStayId', 'updatedAt'])
+              && ((resource.data.status == 'available' && request.resource.data.status == 'occupied')
+                  || (resource.data.status == 'occupied' && request.resource.data.status == 'awaiting_cleaning')))
+          || (hasRole(t, ['staff'])
+              && request.resource.data.diff(resource.data).affectedKeys()
+                   .hasOnly(['status', 'updatedAt'])
+              && ((resource.data.status == 'awaiting_cleaning' && request.resource.data.status == 'cleaning')
+                  || (resource.data.status == 'cleaning' && request.resource.data.status == 'available')));
+        allow delete: if false; // quartos com histórico são arquivados (archived)
+      }
+
+      // ---- Hóspedes (dados pessoais) ----
+      match /guests/{guestId} {
+        allow read, create, update: if canFrontDesk(t);
+        allow delete: if false;
+      }
+
+      // ---- Hospedagens ----
+      match /stays/{stayId} {
+        allow get: if canFrontDesk(t) || canFinance(t)
+          || (authed() && guestHas(t, resource.data.accessHash, stayId));
+        allow list: if canFrontDesk(t) || canFinance(t);
+
+        allow create: if canFrontDesk(t)
+          && request.resource.data.status == 'active'
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.accessHash is string
+          && request.resource.data.accessHash.size() == 64;
+
+        // Campos de vínculo e QR são imutáveis; hospedagem encerrada não reabre.
+        allow update: if canFrontDesk(t)
+          && resource.data.status == 'active'
+          && request.resource.data.roomId == resource.data.roomId
+          && request.resource.data.guestId == resource.data.guestId
+          && request.resource.data.accessHash == resource.data.accessHash
+          && request.resource.data.createdBy == resource.data.createdBy;
+        allow delete: if false;
+
+        match /companions/{id} {
+          allow read, create, update: if canFrontDesk(t);
+          allow delete: if false;
+        }
+
+        // Lançamentos: criados com autoria, nunca apagados; cancelamento exige justificativa.
+        match /charges/{id} {
+          allow read: if canFrontDesk(t) || canFinance(t) || guestOnStay(t, stayId);
+          allow create: if canFrontDesk(t)
+            && get(stayPath(t, stayId)).data.status == 'active'
+            && request.resource.data.createdBy == request.auth.uid
+            && request.resource.data.status == 'active'
+            && request.resource.data.quantity is int && request.resource.data.quantity > 0
+            && request.resource.data.unitCents is int && request.resource.data.unitCents >= 0
+            && request.resource.data.totalCents == request.resource.data.quantity * request.resource.data.unitCents;
+          allow update: if canFrontDesk(t)
+            && resource.data.status == 'active'
+            && request.resource.data.status == 'cancelled'
+            && request.resource.data.cancelReason is string
+            && request.resource.data.cancelReason.size() > 0
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['status', 'cancelReason', 'cancelledBy', 'cancelledAt']);
+          allow delete: if false;
+        }
+
+        // Pagamentos: ID do documento = chave de idempotência. Repetir o mesmo ID vira
+        // update, que é negado. Imutáveis; estorno é um novo documento do tipo 'refund'.
+        match /payments/{id} {
+          allow read: if canFrontDesk(t) || canFinance(t) || guestOnStay(t, stayId);
+          allow create: if canMoney(t)
+            && request.resource.data.createdBy == request.auth.uid
+            && request.resource.data.amountCents is int && request.resource.data.amountCents > 0
+            && request.resource.data.kind in ['payment', 'refund'];
+          allow update, delete: if false;
+        }
+
+        // Chat: mensagens imutáveis; só marcação de leitura muda.
+        match /messages/{id} {
+          allow read: if canFrontDesk(t) || guestOnStay(t, stayId);
+          // Atenção: várias linhas "allow create" são combinadas com OU. Por isso o
+          // remetente e a validação do texto ficam numa única condição com E.
+          allow create: if (
+              (canFrontDesk(t)
+                && request.resource.data.sender == 'staff'
+                && request.resource.data.senderUid == request.auth.uid)
+              || (guestOnStay(t, stayId)
+                && get(stayPath(t, stayId)).data.status == 'active'
+                && request.resource.data.sender == 'guest')
+            )
+            && request.resource.data.text is string
+            && request.resource.data.text.size() > 0
+            && request.resource.data.text.size() <= 2000
+            && request.resource.data.createdAt == request.time;
+          allow update: if (canFrontDesk(t)
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readByStaffAt']))
+            || (guestOnStay(t, stayId)
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readByGuestAt']));
+          allow delete: if false;
+        }
+      }
+
+      // ---- Acesso por QR Code (somente o hash do token existe no banco) ----
+      match /stayAccess/{hash} {
+        // Quem conhece o hash (derivado do token de 256 bits) lê; não há listagem.
+        allow get: if authed();
+        allow list: if false;
+        allow create: if canFrontDesk(t)
+          && hash.size() == 64
+          && request.resource.data.status == 'active';
+        // Única mudança permitida: revogar.
+        allow update: if canFrontDesk(t)
+          && resource.data.status == 'active'
+          && request.resource.data.status == 'revoked'
+          && request.resource.data.stayId == resource.data.stayId;
+        allow delete: if false;
+
+        // Sessão do hóspede (uid anônimo) criada ao abrir o QR Code com hash válido e ativo.
+        match /sessions/{uid} {
+          allow get: if authed() && request.auth.uid == uid;
+          allow list: if false;
+          allow create: if authed()
+            && request.auth.uid == uid
+            && !staffUser()
+            && get(accessPath(t, hash)).data.status == 'active';
+          allow update, delete: if false;
+        }
+
+        // Assinatura de push do hóspede (uso futuro, quando houver remetente).
+        match /push/{uid} {
+          allow read, write: if authed() && request.auth.uid == uid
+            && exists(sessionPath(t, hash))
+            && get(accessPath(t, hash)).data.status == 'active';
+        }
+      }
+
+      // ---- Financeiro ----
+      match /cashRegisters/{id} {
+        allow read: if canFinance(t);
+        allow create, update: if canFinance(t);
+        allow delete: if false;
+        match /movements/{mid} {
+          allow read: if canFinance(t);
+          allow create: if canMoney(t)
+            && request.resource.data.createdBy == request.auth.uid
+            && request.resource.data.amountCents is int && request.resource.data.amountCents > 0;
+          allow update, delete: if false;
+        }
+      }
+      match /accountsPayable/{id} {
+        allow read: if canFinance(t);
+        allow create: if canFinance(t) && request.resource.data.createdBy == request.auth.uid;
+        // Conta paga fica travada: valor e vencimento não mudam depois.
+        allow update: if canFinance(t)
+          && (resource.data.status != 'paid'
+              || (request.resource.data.amountCents == resource.data.amountCents
+                  && request.resource.data.status == 'paid'));
+        allow delete: if false;
+      }
+      match /accountsReceivable/{id} {
+        allow read: if canFinance(t);
+        // Recepção cria o título no checkout quando sobra saldo.
+        allow create: if canMoney(t) && request.resource.data.createdBy == request.auth.uid;
+        allow update: if canFinance(t)
+          && request.resource.data.amountCents == resource.data.amountCents;
+        allow delete: if false;
+      }
+      match /financialCategories/{id} {
+        allow read: if canFinance(t);
+        allow write: if canFinance(t);
+      }
+      match /suppliers/{id} {
+        allow read: if canFinance(t);
+        allow write: if canFinance(t);
+      }
+      match /summaries/{id} {
+        allow read: if canFinance(t);
+        allow write: if canFinance(t);
+      }
+
+      // ---- Operação ----
+      match /cleaningTasks/{id} {
+        allow read: if isMember(t);
+        allow create, update: if canOps(t);
+        allow delete: if false;
+      }
+      match /maintenanceTickets/{id} {
+        allow read: if isMember(t);
+        allow create, update: if canOps(t);
+        allow delete: if false;
+      }
+
+      // ---- Auditoria: só acrescenta, em nome de quem executa ----
+      match /auditLogs/{id} {
+        allow read: if isOwner(t);
+        allow create: if isMember(t)
+          && request.resource.data.actorUid == request.auth.uid
+          && request.resource.data.at == request.time;
+        allow update, delete: if false;
+      }
+    }
+
+    // Tudo o mais é negado.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

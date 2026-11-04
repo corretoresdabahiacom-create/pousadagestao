@@ -8,6 +8,8 @@ import { ROLE_LABELS, isManager } from "@/lib/types";
 import { Spinner } from "@/components/ui";
 import { BRAND } from "@/config/brand";
 import { useBrandTheme } from "@/lib/branding";
+import { doc, getDoc } from "firebase/firestore";
+import { getFirebase } from "@/lib/firebase/client";
 
 export default function PainelLayout({ children }: { children: ReactNode }) {
   const router = useRouter();
@@ -15,6 +17,12 @@ export default function PainelLayout({ children }: { children: ReactNode }) {
   const { loading, user, membership, tenant, logout } = useAuth();
   const [open, setOpen] = useState(false);
   useBrandTheme(membership?.tenantId);
+  const [isPlatform, setIsPlatform] = useState(false);
+  const uid = user?.uid;
+  useEffect(() => {
+    if (!uid) return;
+    getDoc(doc(getFirebase().db, `platformAdmins/${uid}`)).then((d) => setIsPlatform(d.exists()), () => setIsPlatform(false));
+  }, [uid]);
 
   useEffect(() => {
     if (loading) return;
@@ -97,6 +105,7 @@ export default function PainelLayout({ children }: { children: ReactNode }) {
           <span className="text-slate-600">
             {user.displayName || user.email} · {ROLE_LABELS[membership.role]}
           </span>
+          {isPlatform && <Link href="/master/" className="mr-3 font-medium text-brand-700 hover:underline">Painel da plataforma</Link>}
           <button onClick={logout} className="font-medium text-brand-700 hover:underline">
             Sair
           </button>
@@ -109,6 +118,7 @@ export default function PainelLayout({ children }: { children: ReactNode }) {
           )}
           {children}
           <div className="mt-8 lg:hidden">
+            {isPlatform && <Link href="/master/" className="mr-3 text-sm font-medium text-brand-700 hover:underline">Plataforma</Link>}
             <button onClick={logout} className="text-sm font-medium text-brand-700 hover:underline">
               Sair ({user.email})
             </button>

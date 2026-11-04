@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { addDoc, collection, doc, getDoc, getDocs, serverTimestamp, setDoc, updateDoc } from "firebase/firestore";
+import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, serverTimestamp, setDoc, updateDoc } from "firebase/firestore";
 import { getFirebase } from "@/lib/firebase/client";
 import { friendlyError, useAuth } from "@/lib/auth/AuthProvider";
 import { DEFAULT_MAX_ROOMS } from "@/lib/types";
@@ -66,7 +66,7 @@ export default function MasterPage() {
       <div className="grid gap-3 sm:grid-cols-4">
         {[["Pousadas", totals.all], ["Ativas", totals.active], ["Em teste", totals.trial], ["Suspensas", totals.susp]].map(([l, v]) => <Card key={l as string}><p className="text-sm text-slate-600">{l}</p><p className="text-3xl font-bold">{v}</p></Card>)}
       </div>
-      <p className="text-xs text-slate-500">Este painel mostra apenas dados cadastrais das pousadas. Dados de hóspedes e financeiro não são exibidos aqui.</p>
+      <p className="text-xs text-slate-500">“Abrir painel da pousada” entra no aplicativo com a conta com que você está logado: funciona para a pousada em que essa conta é membro. Não há acesso por “personificação” às contas dos clientes, por segurança. Este painel mostra apenas dados cadastrais das pousadas. Dados de hóspedes e financeiro não são exibidos aqui.</p>
 
       <Plans plans={plans} onSaved={() => load().catch(() => {})} onError={setErr} />
 
@@ -98,6 +98,7 @@ function TenantItem({ t, plans, onPatch }: { t: TenantRow; plans: Plan[]; onPatc
         <Field label={`Limite de quartos (padrão ${DEFAULT_MAX_ROOMS})`}><Input type="number" min={1} value={rooms} onChange={(e) => setRooms(e.target.value)} className="w-28" /></Field>
         <Button variant="secondary" onClick={() => { const n = parseInt(rooms); if (n >= 1) void onPatch(t, { limits: { maxRooms: n } }, `limite de quartos = ${n}`); }}>Salvar limite</Button>
         {t.status !== "active" && t.status !== "suspended" && <Button variant="secondary" onClick={() => onPatch(t, { status: "active" }, "ativada")}>Ativar</Button>}
+        <a href="/painel/" className="inline-flex items-center rounded-lg px-3 py-2 text-sm font-medium text-brand-700 ring-1 ring-brand-600/40 hover:bg-brand-50">Abrir painel da pousada</a>
         {t.status === "suspended" ? <Button onClick={() => onPatch(t, { status: "active" }, "reativada")}>Reativar</Button>
           : <Button variant="danger" onClick={() => { if (confirm(`Suspender ${t.displayName || t.name}? A equipe e os hóspedes perdem o acesso até a reativação (os dados são mantidos).`)) void onPatch(t, { status: "suspended" }, "suspensa"); }}>Suspender</Button>}
       </div>
@@ -108,17 +109,20 @@ function TenantItem({ t, plans, onPatch }: { t: TenantRow; plans: Plan[]; onPatc
 function Plans({ plans, onSaved, onError }: { plans: Plan[]; onSaved: () => void; onError: (m: string) => void }) {
   const [id, setId] = useState(""); const [name, setName] = useState(""); const [max, setMax] = useState("20");
   async function save() {
-    const slug = id.trim().toLowerCase().replace(/[^a-z0-9-]/g, "");
+    const toSlug = (v: string) => v.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    const slug = toSlug(id) || toSlug(name);
     const n = parseInt(max);
-    if (!slug || !name.trim() || !(n >= 1)) return onError("Informe um código (letras minúsculas), um nome e o limite de quartos.");
+    if (!slug || !name.trim() || !(n >= 1)) return onError("Informe o nome do plano e o limite de quartos.");
     try { const { db } = getFirebase(); await setDoc(doc(db, `platform/plan-${slug}`), { type: "plan", name: name.trim(), maxRooms: n }); setId(""); setName(""); onSaved(); } catch (e) { onError(friendlyError(e)); }
   }
   return (
     <Card>
       <h2 className="mb-2 font-semibold">Planos</h2>
-      {plans.length === 0 ? <p className="mb-3 text-sm text-slate-500">Nenhum plano criado. Sem plano, cada pousada usa o limite padrão de {DEFAULT_MAX_ROOMS} quartos.</p> : <ul className="mb-3 text-sm">{plans.map((p) => <li key={p.id}>{p.name} ({p.id}) — até {p.maxRooms} quartos</li>)}</ul>}
+      {plans.length === 0 ? <p className="mb-3 text-sm text-slate-500">Nenhum plano criado. Sem plano, cada pousada usa o limite padrão de {DEFAULT_MAX_ROOMS} quartos.</p> : <ul className="mb-3 space-y-1 text-sm">{plans.map((p) => (
+        <li key={p.id} className="flex items-center justify-between gap-2"><span>{p.name} ({p.id.replace(/^plan-/, "")}) — até {p.maxRooms} quartos</span>
+          <Button variant="ghost" onClick={async () => { if (!confirm(`Excluir o plano "${p.name}"? Pousadas que já usam este plano mantêm o limite atual.`)) return; try { const { db } = getFirebase(); await deleteDoc(doc(db, `platform/${p.id}`)); onSaved(); } catch (e) { onError(friendlyError(e)); } }}>Excluir</Button></li>))}</ul>}
       <div className="flex flex-wrap items-end gap-2">
-        <Field label="Código"><Input value={id} onChange={(e) => setId(e.target.value)} placeholder="basico" /></Field>
+        <Field label="Código (opcional)"><Input value={id} onChange={(e) => setId(e.target.value)} placeholder="gerado do nome" /></Field>
         <Field label="Nome"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Básico" /></Field>
         <Field label="Máx. de quartos"><Input type="number" min={1} value={max} onChange={(e) => setMax(e.target.value)} className="w-28" /></Field>
         <Button onClick={save}>Salvar plano</Button>

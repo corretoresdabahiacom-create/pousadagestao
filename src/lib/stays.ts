@@ -59,7 +59,6 @@ export interface Stay {
   feesCents: number;
   totalPlannedCents: number;
   companionsCount: number;
-  notes?: string;
   closing?: Closing;
 }
 
@@ -124,7 +123,6 @@ export function parseStay(id: string, x: Record<string, unknown>): Stay {
     feesCents: Number(x.feesCents ?? 0),
     totalPlannedCents: Number(x.totalPlannedCents ?? 0),
     companionsCount: Number(x.companionsCount ?? 0),
-    notes: x.notes as string | undefined,
     closing: x.closing as Closing | undefined,
   };
 }
@@ -345,11 +343,15 @@ export async function createStay(i: NewStayInput): Promise<{ stayId: string; tok
       feesCents: i.feesCents,
       totalPlannedCents: total,
       companionsCount: i.companions.length,
-      notes: i.notes.trim(),
       createdBy: uid,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
+
+    // Observações internas ficam fora do documento da hospedagem: o hóspede lê a hospedagem, nunca isto.
+    if (i.notes.trim()) {
+      tx.set(doc(db, `tenants/${t}/stayNotes/${stayId}`), { text: i.notes.trim().slice(0, 500), createdBy: uid, createdAt: serverTimestamp() });
+    }
 
     tx.set(doc(db, `tenants/${t}/stayAccess/${hash}`), {
       stayId,

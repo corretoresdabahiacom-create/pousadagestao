@@ -47,7 +47,7 @@ beforeEach(async () => {
       await setDoc(doc(db, `tenants/${t}/rooms/r3`), { number: "3", status: "awaiting_cleaning" });
       await setDoc(doc(db, `tenants/${t}/rooms/r4`), { number: "4", status: "cleaning" });
       await setDoc(doc(db, `tenants/${t}/guests/g1`), { fullName: "Hóspede " + t });
-      await setDoc(doc(db, `tenants/${t}/stays/s1`), { status: "active", roomId: "r1", guestId: "g1", accessHash: h, createdBy: "x", totalCents: 60000 });
+      await setDoc(doc(db, `tenants/${t}/stays/s1`), { ...stayData(h), totalCents: 60000 });
       await setDoc(doc(db, `tenants/${t}/stays/s1/charges/c1`), { status: "active", quantity: 1, unitCents: 500, totalCents: 500, createdBy: "x" });
       await setDoc(doc(db, `tenants/${t}/stays/s1/payments/p1`), { amountCents: 1000, kind: "payment", createdBy: "x" });
       await setDoc(doc(db, `tenants/${t}/stayAccess/${h}`), { stayId: "s1", status: "active" });
@@ -59,6 +59,16 @@ beforeEach(async () => {
 
 const staff = (tenantId: string, role: string) => env.authenticatedContext(`${tenantId}-${role}`, { email_verified: true }).firestore();
 const guest = (uid: string) => env.authenticatedContext(uid, { firebase: { sign_in_provider: "anonymous" } }).firestore();
+
+
+/** Documento de hospedagem completo e coerente (3 diárias de R$ 200,00). */
+const TS_IN = Timestamp.fromDate(new Date("2026-11-01T15:00:00Z"));
+const TS_OUT = Timestamp.fromDate(new Date("2026-11-04T15:00:00Z"));
+const stayData = (hash: string, over: Record<string, unknown> = {}, room = "r1", uid = "x") => ({
+  status: "active", roomId: room, roomNumber: "1", guestId: "g1", guestName: "Hóspede", guestPhone: "7199999999",
+  accessHash: hash, checkInAt: TS_IN, plannedCheckOutAt: TS_OUT, nights: 3, dailyRateCents: 20000, lodgingCents: 60000,
+  discountCents: 0, feesCents: 0, totalPlannedCents: 60000, companionsCount: 0, createdBy: uid, ...over,
+});
 
 describe("isolamento multi-tenant", () => {
   it("membro da pousada A lê dados da A", async () => {
@@ -313,7 +323,8 @@ describe("integridade financeira", () => {
 
   it("vínculo do QR Code na hospedagem é imutável", async () => {
     await assertFails(updateDoc(doc(staff(A, "reception"), `tenants/${A}/stays/s1`), { accessHash: "c".repeat(64) }));
-    await assertSucceeds(updateDoc(doc(staff(A, "reception"), `tenants/${A}/stays/s1`), { notes: "ok" }));
+    // observação não é mais campo da hospedagem
+    await assertFails(updateDoc(doc(staff(A, "reception"), `tenants/${A}/stays/s1`), { notes: "ok" }));
   });
 });
 
@@ -400,7 +411,7 @@ describe("portal do hóspede (QR Code)", () => {
     const b = writeBatch(rec);
     b.set(doc(rec, `tenants/${A}/stayAccess/${NEW}`), { stayId: "s2", status: "active" });
     b.update(doc(rec, `tenants/${A}/rooms/r1`), { status: "occupied", currentStayId: "s2", updatedAt: serverTimestamp() });
-    b.set(doc(rec, `tenants/${A}/stays/s2`), { status: "active", roomId: "r1", guestId: "g1", accessHash: NEW, createdBy: `${A}-reception` });
+    b.set(doc(rec, `tenants/${A}/stays/s2`), { ...stayData(NEW, {}, "r1", `${A}-reception`), createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
     await assertSucceeds(b.commit());
     const velho = guest("g-old");
     await assertFails(setDoc(doc(velho, `tenants/${A}/stayAccess/${HASH}/sessions/g-old`), { x: 1 }));
@@ -426,7 +437,7 @@ describe("check-in atômico (quarto + QR + hospedagem no mesmo lote)", () => {
     const b = writeBatch(db);
     b.set(doc(db, `tenants/${A}/stayAccess/${NEW}`), { stayId: "s9", status: "active" });
     if (over.occupy !== false) b.update(doc(db, `tenants/${A}/rooms/${room}`), { status: "occupied", currentStayId: "s9", updatedAt: serverTimestamp() });
-    b.set(doc(db, `tenants/${A}/stays/s9`), { status: "active", roomId: room, guestId: "g1", accessHash: over.hash ?? NEW, createdBy: `${A}-reception` });
+    b.set(doc(db, `tenants/${A}/stays/s9`), { ...stayData(over.hash ?? NEW, {}, room, `${A}-reception`), createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
     return b.commit();
   };
 
@@ -588,5 +599,77 @@ describe("planos, limites e suspensão", () => {
     await assertSucceeds(getDoc(doc(g, `tenants/${A}/stays/s1`)));
     await env.withSecurityRulesDisabled(async (ctx) => { await updateDoc(doc(ctx.firestore(), `tenants/${A}`), { status: "suspended" }); });
     await assertFails(getDoc(doc(g, `tenants/${A}/stays/s1`)));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fase 1 — segurança: observações internas, campos da hospedagem, coleção platform
+// ---------------------------------------------------------------------------
+describe("fase 1 — dados internos e campos da hospedagem", () => {
+  it("observação interna: equipe lê; hóspede nunca", async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), `tenants/${A}/stayNotes/s1`), { text: "só equipe", createdBy: "x" });
+    });
+    await assertSucceeds(getDoc(doc(staff(A, "reception"), `tenants/${A}/stayNotes/s1`)));
+    await assertFails(getDoc(doc(staff(A, "staff"), `tenants/${A}/stayNotes/s1`)));
+    const g = guest("g-n");
+    await setDoc(doc(g, `tenants/${A}/stayAccess/${HASH}/sessions/g-n`), { createdAt: serverTimestamp() });
+    await assertSucceeds(getDoc(doc(g, `tenants/${A}/stays/s1`)));
+    await assertFails(getDoc(doc(g, `tenants/${A}/stayNotes/s1`)));
+    await assertFails(setDoc(doc(g, `tenants/${A}/stayNotes/s1`), { text: "x", createdBy: "g-n" }));
+  });
+
+  it("recepção não altera diária, desconto, taxas, entrada, nome nem telefone", async () => {
+    const ref = doc(staff(A, "reception"), `tenants/${A}/stays/s1`);
+    for (const change of [
+      { dailyRateCents: 1 }, { discountCents: 59999 }, { feesCents: 5 }, { checkInAt: TS_OUT },
+      { guestName: "Outro" }, { guestPhone: "0" }, { totalPlannedCents: 1 }, { companionsCount: 9 }, { roomId: "r2" },
+    ]) await assertFails(updateDoc(ref, change));
+  });
+
+  it("prorrogação válida passa; com total ou diárias incoerentes é negada", async () => {
+    const ref = doc(staff(A, "reception"), `tenants/${A}/stays/s1`);
+    const out5 = Timestamp.fromDate(new Date("2026-11-06T15:00:00Z"));
+    await assertFails(updateDoc(ref, { plannedCheckOutAt: out5, nights: 5, lodgingCents: 100000, totalPlannedCents: 1, updatedAt: serverTimestamp() }));
+    await assertFails(updateDoc(ref, { plannedCheckOutAt: out5, nights: 5, lodgingCents: 1, totalPlannedCents: 1, updatedAt: serverTimestamp() }));
+    await assertFails(updateDoc(ref, { plannedCheckOutAt: TS_IN, nights: 5, lodgingCents: 100000, totalPlannedCents: 100000, updatedAt: serverTimestamp() }));
+    await assertSucceeds(updateDoc(ref, { plannedCheckOutAt: out5, nights: 5, lodgingCents: 100000, totalPlannedCents: 100000, updatedAt: serverTimestamp() }));
+  });
+
+  it("check-in com totais incoerentes ou campos extras é negado", async () => {
+    const mk = (over: Record<string, unknown>) => {
+      const db = staff(A, "reception");
+      const b = writeBatch(db);
+      const H = "e".repeat(64);
+      b.set(doc(db, `tenants/${A}/stayAccess/${H}`), { stayId: "s7", status: "active" });
+      b.update(doc(db, `tenants/${A}/rooms/r1`), { status: "occupied", currentStayId: "s7", updatedAt: serverTimestamp() });
+      b.set(doc(db, `tenants/${A}/stays/s7`), { ...stayData(H, over, "r1", `${A}-reception`), createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+      return b.commit();
+    };
+    await assertFails(mk({ totalPlannedCents: 1 }));
+  });
+  it("check-in com campo extra (ex.: notes) é negado", async () => {
+    const db = staff(A, "reception");
+    const b = writeBatch(db);
+    const H = "e".repeat(64);
+    b.set(doc(db, `tenants/${A}/stayAccess/${H}`), { stayId: "s8", status: "active" });
+    b.update(doc(db, `tenants/${A}/rooms/r1`), { status: "occupied", currentStayId: "s8", updatedAt: serverTimestamp() });
+    b.set(doc(db, `tenants/${A}/stays/s8`), { ...stayData(H, { notes: "vazou" }, "r1", `${A}-reception`), createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+    await assertFails(b.commit());
+  });
+
+  it("coleção platform: só o administrador da plataforma lê e grava", async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), "platformAdmins/root2"), { x: 1 });
+      await setDoc(doc(ctx.firestore(), "platform/plan-x"), { type: "plan", name: "X", maxRooms: 5 });
+      await setDoc(doc(ctx.firestore(), "platform/log1"), { type: "log", tenantId: A });
+    });
+    const g = guest("g-p");
+    await assertFails(getDoc(doc(g, "platform/plan-x")));
+    await assertFails(getDocs(collection(g, "platform")));
+    await assertFails(getDoc(doc(staff(A, "owner"), "platform/log1")));
+    const root = env.authenticatedContext("root2", { email_verified: true }).firestore();
+    await assertSucceeds(getDocs(collection(root, "platform")));
+    await assertSucceeds(setDoc(doc(root, "platform/plan-y"), { type: "plan", name: "Y", maxRooms: 9 }));
   });
 });

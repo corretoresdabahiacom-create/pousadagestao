@@ -6,7 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { doc, onSnapshot } from "firebase/firestore";
 import { getFirebase } from "@/lib/firebase/client";
 import { friendlyError, useAuth } from "@/lib/auth/AuthProvider";
-import { useStay } from "@/lib/useStays";
+import { useStay, useStayNotes } from "@/lib/useStays";
 import {
   CHARGE_CATEGORIES,
   PAY_METHODS,
@@ -48,6 +48,7 @@ function StayDetail() {
   const canAct = role === "owner" || role === "admin" || role === "reception";
   const allowed = canAct || role === "finance";
   const { stay, charges, payments, companions, error } = useStay(allowed ? tenantId : undefined, id);
+  const internalNotes = useStayNotes(allowed ? tenantId : undefined, id);
   const [access, setAccess] = useState<string | null>(null);
   const [modal, setModal] = useState<"" | "charge" | "pay" | "refund" | "extend" | "checkout">("");
   const [qr, setQr] = useState<string | null>(null);
@@ -127,7 +128,7 @@ function StayDetail() {
               {companions.map((c) => <li key={c.id}>{c.fullName}</li>)}
             </ul>
           )}
-          {stay.notes && <p className="mt-3 rounded bg-slate-50 p-2 text-sm text-slate-600">{stay.notes}</p>}
+          {internalNotes && <p className="mt-3 rounded bg-slate-50 p-2 text-sm text-slate-600"><strong>Observação interna:</strong> {internalNotes}</p>}
           {active && (
             <div className="mt-4 border-t border-slate-100 pt-3">
               <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Avisos de checkout (no portal do hóspede)</p>

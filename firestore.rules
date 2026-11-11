@@ -45,6 +45,19 @@ service cloud.firestore {
     function canMoney(t)      { return hasRole(t, ['owner', 'admin', 'reception', 'finance']); }
     function canOps(t)        { return hasRole(t, ['owner', 'admin', 'reception', 'staff']); }
 
+    // Total planejado = diárias − desconto + taxas (nunca negativo), em centavos inteiros.
+    function plannedTotal(d) {
+      return (d.lodgingCents - d.discountCents + d.feesCents) < 0 ? 0 : (d.lodgingCents - d.discountCents + d.feesCents);
+    }
+    function stayMoneyOk(d) {
+      return d.nights is int && d.nights >= 1 && d.nights <= 366
+        && d.dailyRateCents is int && d.dailyRateCents >= 0
+        && d.discountCents is int && d.discountCents >= 0
+        && d.feesCents is int && d.feesCents >= 0
+        && d.lodgingCents == d.dailyRateCents * d.nights
+        && d.totalPlannedCents == plannedTotal(d);
+    }
+
     // ---------------- Hóspede (QR Code) ----------------
     // Sessão do hóspede: existe sessions/{uid} sob o hash E o acesso segue ativo (não revogado).
     function guestHas(t, h, s) {
@@ -73,9 +86,10 @@ service cloud.firestore {
       allow get: if staffUser() && request.auth.uid == uid;
       allow list, write: if false; // gerenciado apenas pelo console do Firebase
     }
+    // Planos e registros administrativos: somente o administrador da plataforma.
+    // Nem a equipe das pousadas nem hóspedes (contas anônimas) leem esta coleção.
     match /platform/{document=**} {
-      allow read: if authed();            // planos são informativos
-      allow write: if isPlatformAdmin();
+      allow read, write: if isPlatformAdmin();
     }
 
     // ---------------- Pousada ----------------
@@ -205,6 +219,19 @@ service cloud.firestore {
       }
 
       // ---- Hospedagens ----
+      // Observações internas da hospedagem: só a equipe lê; o hóspede nunca.
+      match /stayNotes/{stayId} {
+        allow read: if canFrontDesk(t) || canFinance(t);
+        allow create: if canFrontDesk(t)
+          && request.resource.data.keys().hasOnly(['text', 'createdBy', 'createdAt'])
+          && request.resource.data.text is string && request.resource.data.text.size() <= 500
+          && request.resource.data.createdBy == request.auth.uid;
+        allow update: if canFrontDesk(t)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['text'])
+          && request.resource.data.text is string && request.resource.data.text.size() <= 500;
+        allow delete: if false;
+      }
+
       match /stays/{stayId} {
         allow get: if canFrontDesk(t) || canFinance(t)
           || (authed() && guestHas(t, resource.data.accessHash, stayId));
@@ -217,29 +244,44 @@ service cloud.firestore {
           && request.resource.data.createdBy == request.auth.uid
           && request.resource.data.accessHash is string
           && request.resource.data.accessHash.size() == 64
+          && request.resource.data.keys().hasOnly(['status', 'roomId', 'roomNumber', 'guestId', 'guestName', 'guestPhone',
+               'accessHash', 'checkInAt', 'plannedCheckOutAt', 'nights', 'dailyRateCents', 'lodgingCents', 'discountCents',
+               'feesCents', 'totalPlannedCents', 'companionsCount', 'createdBy', 'createdAt', 'updatedAt'])
+          && request.resource.data.checkInAt is timestamp && request.resource.data.plannedCheckOutAt is timestamp
+          && request.resource.data.plannedCheckOutAt > request.resource.data.checkInAt
+          && stayMoneyOk(request.resource.data)
           && get(roomPath(t, request.resource.data.roomId)).data.status == 'available'
           && getAfter(roomPath(t, request.resource.data.roomId)).data.status == 'occupied'
           && getAfter(roomPath(t, request.resource.data.roomId)).data.currentStayId == stayId
           && getAfter(accessPath(t, request.resource.data.accessHash)).data.stayId == stayId;
 
-        // Quarto, hóspede e autoria são imutáveis; hospedagem encerrada não reabre.
-        // O código do QR só muda na reemissão (o antigo é revogado no mesmo lote) e o
-        // encerramento só é aceito junto com a revogação do código.
+        // Só três operações alteram a hospedagem, cada uma com lista fechada de campos:
+        //  (1) prorrogação  (2) reemissão do QR Code  (3) encerramento (junto com a revogação do QR).
+        // Diária, desconto, taxas, entrada, hóspede, quarto e autoria nunca mudam depois do check-in.
         allow update: if canFrontDesk(t)
           && resource.data.status == 'active'
-          && request.resource.data.roomId == resource.data.roomId
-          && request.resource.data.guestId == resource.data.guestId
-          && request.resource.data.createdBy == resource.data.createdBy
-          && (request.resource.data.status == 'active'
-              || (request.resource.data.status == 'closed'
-                  && getAfter(accessPath(t, resource.data.accessHash)).data.status == 'revoked'))
-          && (request.resource.data.accessHash == resource.data.accessHash
-              || (request.resource.data.accessHash is string
-                  && request.resource.data.accessHash.size() == 64
-                  && request.resource.data.status == 'active'
-                  && getAfter(accessPath(t, resource.data.accessHash)).data.status == 'revoked'
-                  && getAfter(accessPath(t, request.resource.data.accessHash)).data.status == 'active'
-                  && getAfter(accessPath(t, request.resource.data.accessHash)).data.stayId == stayId));
+          && request.resource.data.status == resource.data.status
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['plannedCheckOutAt', 'nights', 'lodgingCents', 'totalPlannedCents', 'updatedAt'])
+          && request.resource.data.plannedCheckOutAt is timestamp
+          && request.resource.data.plannedCheckOutAt > resource.data.checkInAt
+          && stayMoneyOk(request.resource.data);
+
+        allow update: if canFrontDesk(t)
+          && resource.data.status == 'active'
+          && request.resource.data.status == 'active'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['accessHash', 'updatedAt'])
+          && request.resource.data.accessHash is string
+          && request.resource.data.accessHash.size() == 64
+          && getAfter(accessPath(t, resource.data.accessHash)).data.status == 'revoked'
+          && getAfter(accessPath(t, request.resource.data.accessHash)).data.status == 'active'
+          && getAfter(accessPath(t, request.resource.data.accessHash)).data.stayId == stayId;
+
+        allow update: if canFrontDesk(t)
+          && resource.data.status == 'active'
+          && request.resource.data.status == 'closed'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'checkedOutAt', 'updatedAt', 'closing'])
+          && request.resource.data.checkedOutAt is timestamp
+          && getAfter(accessPath(t, resource.data.accessHash)).data.status == 'revoked';
         allow delete: if false;
 
         match /companions/{id} {

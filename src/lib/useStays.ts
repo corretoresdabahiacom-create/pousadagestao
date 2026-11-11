@@ -121,3 +121,14 @@ export function useMessages(tenantId: string | undefined, stayId: string | null 
   }, [tenantId, stayId]);
   return { messages, denied };
 }
+
+/** Observações internas da hospedagem (somente equipe; nunca expostas ao hóspede). */
+export function useStayNotes(tenantId: string | undefined, stayId: string | null): string {
+  const [text, setText] = useState("");
+  useEffect(() => {
+    if (!tenantId || !stayId) return;
+    const { db } = getFirebase();
+    return onSnapshot(doc(db, `tenants/${tenantId}/stayNotes/${stayId}`), (s) => setText((s.data()?.text as string) ?? ""), () => setText(""));
+  }, [tenantId, stayId]);
+  return text;
+}

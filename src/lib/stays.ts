@@ -1,6 +1,9 @@
 import type { User } from "firebase/auth";
 import {
   Timestamp,
+  type DocumentData,
+  type DocumentReference,
+  type Transaction,
   collection,
   doc,
   getDoc,
@@ -231,6 +234,7 @@ function paymentWrites(
         method: p.method,
         source: "stay",
         stayId,
+        paymentKey: key,
         category: "Hospedagem",
         description: `${p.kind === "payment" ? "Recebimento" : "Estorno"} — ${stayLabel}`,
         createdBy: uid,
@@ -444,6 +448,12 @@ export async function addPayment(
   if (!Number.isSafeInteger(p.amountCents) || p.amountCents <= 0) throw new StayError("Valor inválido.");
   const existing = await getDoc(doc(db, `tenants/${t}/stays/${stay.id}/payments/${key}`));
   if (existing.exists()) return; // já gravado numa tentativa anterior
+  if (p.kind === "refund") {
+    // Estorno nunca pode passar do que foi efetivamente recebido nesta hospedagem.
+    const all = await getDocs(collection(db, `tenants/${t}/stays/${stay.id}/payments`));
+    const received = all.docs.reduce((n, d) => n + (d.data().kind === "payment" ? Number(d.data().amountCents) : -Number(d.data().amountCents)), 0);
+    if (p.amountCents > received) throw new StayError("O estorno é maior que o valor já recebido.");
+  }
   const b = writeBatch(db);
   for (const w of paymentWrites(t, user.uid, stay.id, `Quarto ${stay.roomNumber} · ${stay.guestName}`, key, p)) b.set(w.ref, w.data);
   b.set(newAuditRef(t), auditData(user.uid, p.kind === "payment" ? "payment.add" : "payment.refund", { stayId: stay.id, amountCents: p.amountCents, key }));
@@ -568,7 +578,13 @@ export async function closeStay(i: CheckoutInput): Promise<Closing> {
     pendingCents: pending,
   };
 
-  const b = writeBatch(db);
+  // Operações acumuladas e aplicadas numa transação (relê a hospedagem e a conta antes de gravar).
+  const ops: Array<(tx: Transaction) => void> = [];
+  const b = {
+    set: (r: DocumentReference, d: DocumentData) => { ops.push((tx) => { tx.set(r, d); }); },
+    update: (r: DocumentReference, d: DocumentData) => { ops.push((tx) => { tx.update(r, d); }); },
+  };
+  const stayRef = doc(db, `tenants/${t}/stays/${s.id}`);
   const label = `Quarto ${s.roomNumber} · ${s.guestName}`;
 
   if (payNow > 0 && i.payment) {
@@ -636,7 +652,19 @@ export async function closeStay(i: CheckoutInput): Promise<Closing> {
 
   b.set(newAuditRef(t), auditData(uid, "stay.checkout", { stayId: s.id, totalCents: closing.totalCents, pendingCents: pending }));
 
-  await b.commit();
+  await runTransaction(db, async (tx) => {
+    const fresh = await tx.get(stayRef);
+    if (!fresh.exists() || fresh.data().status !== "active") throw new StayError("Esta hospedagem já foi encerrada.");
+    const [c2, p2] = await Promise.all([
+      getDocs(collection(db, `tenants/${t}/stays/${s.id}/charges`)),
+      getDocs(collection(db, `tenants/${t}/stays/${s.id}/payments`)),
+    ]);
+    const acc2 = computeAccount(s, c2.docs.map((d) => parseCharge(d.id, d.data())), p2.docs.map((d) => parsePayment(d.id, d.data())));
+    if (acc2.totalCents !== acc.totalCents || acc2.paidCents !== acc.paidCents) {
+      throw new StayError("A conta mudou durante o encerramento. Revise os valores e tente novamente.");
+    }
+    for (const op of ops) op(tx);
+  });
   return closing;
 }
 

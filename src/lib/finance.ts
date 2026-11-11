@@ -1,5 +1,5 @@
 import {
-  Timestamp, addDoc, collection, doc, getDocs, onSnapshot, query, serverTimestamp, where, writeBatch, orderBy, type DocumentData,
+  Timestamp, addDoc, collection, doc, getDocs, onSnapshot, runTransaction, query, serverTimestamp, where, writeBatch, orderBy, type DocumentData,
 } from "firebase/firestore";
 import { useEffect, useState } from "react";
 import { getFirebase } from "@/lib/firebase/client";
@@ -72,6 +72,8 @@ export async function openRegister(t: string, uid: string, openingCents: number)
   const ref = doc(collection(db, `tenants/${t}/cashRegisters`));
   const b = writeBatch(db);
   b.set(ref, { status: "open", openingCents, openedBy: uid, openedAt: serverTimestamp() });
+  // "Trava" que impede dois caixas abertos ao mesmo tempo (as regras exigem que ela não exista).
+  b.set(doc(db, `tenants/${t}/registerLock/current`), { registerId: ref.id });
   b.set(doc(collection(db, `tenants/${t}/auditLogs`)), { actorUid: uid, action: "cash.open", details: { openingCents }, at: serverTimestamp() });
   await b.commit();
 }
@@ -85,13 +87,16 @@ export function expectedCash(reg: Register, entries: CashEntry[]): number {
     .reduce((s, e) => s + (e.kind === "in" ? e.amountCents : -e.amountCents), reg.openingCents);
 }
 
-export async function closeRegister(t: string, uid: string, reg: Register, entries: CashEntry[], countedCents: number, note: string) {
+/** Fecha o caixa. O esperado é recalculado no servidor de dados (todas as entradas desde a abertura, sem limite de dias). */
+export async function closeRegister(t: string, uid: string, reg: Register, _entries: CashEntry[], countedCents: number, note: string) {
   const { db } = getFirebase();
-  const expected = expectedCash(reg, entries);
+  const all = await loadAllCash(t, new Date(reg.openedAt.getTime() - 2000), new Date(Date.now() + 60_000));
+  const expected = expectedCash(reg, all);
   const b = writeBatch(db);
   b.update(doc(db, `tenants/${t}/cashRegisters/${reg.id}`), {
     status: "closed", closedAt: serverTimestamp(), closedBy: uid, countedCents, expectedCents: expected, differenceCents: countedCents - expected, note,
   });
+  b.delete(doc(db, `tenants/${t}/registerLock/current`));
   b.set(doc(collection(db, `tenants/${t}/auditLogs`)), { actorUid: uid, action: "cash.close", details: { registerId: reg.id, expected, countedCents, diff: countedCents - expected }, at: serverTimestamp() });
   await b.commit();
 }
@@ -103,6 +108,13 @@ export async function addManualEntry(t: string, uid: string, e: { kind: "in" | "
     kind: e.kind, amountCents: e.amountCents, method: e.method, source: "manual", category: e.category, description: e.description,
     transfer: e.transfer === true, registerId: e.registerId ?? null, createdBy: uid, at: serverTimestamp(),
   });
+  // Entrada manual (que não é transferência) também é receita de competência, no mesmo lote.
+  if (e.kind === "in" && e.transfer !== true) {
+    b.set(doc(db, `tenants/${t}/revenues/manual-${e.key}`), {
+      kind: "manual", description: e.description, date: serverTimestamp(), grossCents: e.amountCents, deductionsCents: 0,
+      lines: [{ category: e.category, cents: e.amountCents }], createdBy: uid,
+    });
+  }
   b.set(doc(collection(db, `tenants/${t}/auditLogs`)), { actorUid: uid, action: "cash.manual", details: { kind: e.kind, amountCents: e.amountCents, category: e.category }, at: serverTimestamp() });
   await b.commit();
 }
@@ -117,14 +129,21 @@ export function splitInstallments(total: number, n: number): number[] {
   arr[n - 1] += total - base * n;
   return arr;
 }
+/** Soma meses sem "estourar" o fim do mês (31/01 + 1 mês = 28/02, não 03/03). */
+export function addMonths(d: Date, n: number): Date {
+  const r = new Date(d.getFullYear(), d.getMonth() + n, 1, d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds());
+  const last = new Date(r.getFullYear(), r.getMonth() + 1, 0).getDate();
+  r.setDate(Math.min(d.getDate(), last));
+  return r;
+}
 export async function createPayables(t: string, uid: string, i: PayableInput) {
   const { db } = getFirebase();
   const b = writeBatch(db);
   const parts = splitInstallments(i.amountCents, Math.max(1, i.installments));
   const group = newId();
   parts.forEach((cents, idx) => {
-    const due = new Date(i.dueDate); due.setMonth(due.getMonth() + idx);
-    const comp = new Date(i.competenceDate); comp.setMonth(comp.getMonth() + idx);
+    const due = addMonths(i.dueDate, idx);
+    const comp = addMonths(i.competenceDate, idx);
     b.set(doc(db, `tenants/${t}/accountsPayable/${group}-${idx + 1}`), {
       supplier: i.supplier, description: i.description, category: i.category, amountCents: cents,
       dueDate: Timestamp.fromDate(due), competenceDate: Timestamp.fromDate(comp), status: "open",
@@ -180,17 +199,26 @@ export async function saveRecurring(t: string, r: Omit<Recurring, "id" | "lastGe
 }
 
 // ----------------------------------------------------- contas a receber
+/** Recebimento (parcial ou total) numa transação: relê o título e recusa valor acima do saldo, sem corrida entre dois usuários. */
 export async function receiveReceivable(t: string, uid: string, r: Receivable, amountCents: number, method: PayMethod, key: string) {
   const { db } = getFirebase();
-  const newTotal = r.receivedCents + amountCents;
-  const b = writeBatch(db);
-  b.update(doc(db, `tenants/${t}/accountsReceivable/${r.id}`), { receivedCents: newTotal, status: newTotal >= r.amountCents ? "received" : "open", lastReceivedAt: serverTimestamp() });
-  b.set(doc(db, `tenants/${t}/cashEntries/rcv-${r.id}-${key}`), {
-    kind: "in", amountCents, method, source: "receivable", receivableId: r.id, stayId: r.stayId ?? null, category: "Hospedagem",
-    description: `Recebimento — ${r.customerName}`, transfer: false, createdBy: uid, at: serverTimestamp(),
+  if (!Number.isSafeInteger(amountCents) || amountCents <= 0) throw new Error("Valor inválido.");
+  const ref = doc(db, `tenants/${t}/accountsReceivable/${r.id}`);
+  const cashRef = doc(db, `tenants/${t}/cashEntries/rcv-${r.id}-${key}`);
+  await runTransaction(db, async (tx) => {
+    const [snap, done] = await Promise.all([tx.get(ref), tx.get(cashRef)]);
+    if (done.exists()) return; // tentativa repetida: já gravado
+    if (!snap.exists() || snap.data().status !== "open") throw new Error("Este título não está mais em aberto.");
+    const total = Number(snap.data().amountCents);
+    const newTotal = Number(snap.data().receivedCents ?? 0) + amountCents;
+    if (newTotal > total) throw new Error("O valor é maior que o saldo a receber.");
+    tx.update(ref, { receivedCents: newTotal, status: newTotal === total ? "received" : "open", lastReceivedAt: serverTimestamp(), lastReceiptKey: key });
+    tx.set(cashRef, {
+      kind: "in", amountCents, method, source: "receivable", receivableId: r.id, receiptKey: key, stayId: r.stayId ?? null, category: "Hospedagem",
+      description: `Recebimento — ${r.customerName}`, transfer: false, createdBy: uid, at: serverTimestamp(),
+    });
+    tx.set(doc(collection(db, `tenants/${t}/auditLogs`)), { actorUid: uid, action: "receivable.receive", details: { id: r.id, amountCents }, at: serverTimestamp() });
   });
-  b.set(doc(collection(db, `tenants/${t}/auditLogs`)), { actorUid: uid, action: "receivable.receive", details: { id: r.id, amountCents }, at: serverTimestamp() });
-  await b.commit();
 }
 
 // ----------------------------------------------------------------- DRE

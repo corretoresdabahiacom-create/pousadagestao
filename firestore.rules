@@ -17,6 +17,13 @@ service cloud.firestore {
     function memberPath(t) { return /databases/$(database)/documents/tenants/$(t)/members/$(request.auth.uid); }
     function roomPath(t, r) { return /databases/$(database)/documents/tenants/$(t)/rooms/$(r); }
     function stayPath(t, s) { return /databases/$(database)/documents/tenants/$(t)/stays/$(s); }
+    function cashPath(t, c) { return /databases/$(database)/documents/tenants/$(t)/cashEntries/$(c); }
+    function payablePath(t, p) { return /databases/$(database)/documents/tenants/$(t)/accountsPayable/$(p); }
+    function receivablePath(t, r) { return /databases/$(database)/documents/tenants/$(t)/accountsReceivable/$(r); }
+    function registerPath(t, r) { return /databases/$(database)/documents/tenants/$(t)/cashRegisters/$(r); }
+    function lockPath(t) { return /databases/$(database)/documents/tenants/$(t)/registerLock/current; }
+    function revenuePath(t, r) { return /databases/$(database)/documents/tenants/$(t)/revenues/$(r); }
+    function paymentPath(t, s, k) { return /databases/$(database)/documents/tenants/$(t)/stays/$(s)/payments/$(k); }
     function accessPath(t, h) { return /databases/$(database)/documents/tenants/$(t)/stayAccess/$(h); }
     function sessionPath(t, h) { return /databases/$(database)/documents/tenants/$(t)/stayAccess/$(h)/sessions/$(request.auth.uid); }
 
@@ -311,12 +318,24 @@ service cloud.firestore {
 
         // Pagamentos: ID do documento = chave de idempotência. Repetir o mesmo ID vira
         // update, que é negado. Imutáveis; estorno é um novo documento do tipo 'refund'.
+        // Cada pagamento nasce junto do lançamento de caixa correspondente (mesmo lote), com o mesmo
+        // valor/método, e só enquanto a hospedagem está ativa (ou sendo criada/encerrada no mesmo lote).
         match /payments/{id} {
           allow read: if canFrontDesk(t) || canFinance(t) || guestOnStay(t, stayId);
           allow create: if canMoney(t)
+            && request.resource.data.keys().hasOnly(['kind', 'amountCents', 'method', 'note', 'createdBy', 'createdAt'])
             && request.resource.data.createdBy == request.auth.uid
             && request.resource.data.amountCents is int && request.resource.data.amountCents > 0
-            && request.resource.data.kind in ['payment', 'refund'];
+            && request.resource.data.kind in ['payment', 'refund']
+            && request.resource.data.method is string
+            && ((exists(stayPath(t, stayId)) && get(stayPath(t, stayId)).data.status == 'active')
+                || !exists(stayPath(t, stayId)))
+            && existsAfter(stayPath(t, stayId))
+            && existsAfter(cashPath(t, 'stay-' + id))
+            && getAfter(cashPath(t, 'stay-' + id)).data.amountCents == request.resource.data.amountCents
+            && getAfter(cashPath(t, 'stay-' + id)).data.method == request.resource.data.method
+            && getAfter(cashPath(t, 'stay-' + id)).data.stayId == stayId
+            && getAfter(cashPath(t, 'stay-' + id)).data.kind == (request.resource.data.kind == 'payment' ? 'in' : 'out');
           allow update, delete: if false;
         }
 
@@ -383,26 +402,79 @@ service cloud.firestore {
       // Caixa: sessões de abertura/fechamento. O saldo esperado é calculado a partir de cashEntries.
       match /cashRegisters/{id} {
         allow read: if canFinance(t);
+        // Só um caixa aberto por vez: o "trava" registerLock/current precisa não existir e é criado no mesmo lote.
         allow create: if canFinance(t)
+          && request.resource.data.keys().hasOnly(['status', 'openingCents', 'openedBy', 'openedAt'])
           && request.resource.data.status == 'open'
           && request.resource.data.openedBy == request.auth.uid
-          && request.resource.data.openingCents is int && request.resource.data.openingCents >= 0;
+          && request.resource.data.openingCents is int && request.resource.data.openingCents >= 0
+          && request.resource.data.openedAt == request.time
+          && !exists(lockPath(t))
+          && existsAfter(lockPath(t))
+          && getAfter(lockPath(t)).data.registerId == id;
+        // Fechamento: só muda campos de fechamento; diferença = contado − esperado; libera a trava.
         allow update: if canFinance(t)
           && resource.data.status == 'open'
           && request.resource.data.status == 'closed'
-          && request.resource.data.openingCents == resource.data.openingCents;
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['status', 'closedAt', 'closedBy', 'countedCents', 'expectedCents', 'differenceCents', 'note'])
+          && request.resource.data.countedCents is int && request.resource.data.countedCents >= 0
+          && request.resource.data.expectedCents is int
+          && request.resource.data.differenceCents == request.resource.data.countedCents - request.resource.data.expectedCents
+          && request.resource.data.closedBy == request.auth.uid
+          && !existsAfter(lockPath(t));
         allow delete: if false;
       }
 
+      match /registerLock/{id} {
+        allow read: if canFinance(t);
+        allow create: if canFinance(t) && id == 'current'
+          && request.resource.data.keys().hasOnly(['registerId'])
+          && request.resource.data.registerId is string
+          && getAfter(registerPath(t, request.resource.data.registerId)).data.status == 'open';
+        allow delete: if canFinance(t) && id == 'current'
+          && getAfter(registerPath(t, resource.data.registerId)).data.status == 'closed';
+        allow update: if false;
+      }
+
       // Razão de caixa (regime de caixa): cada entrada/saída efetiva de dinheiro.
-      // Imutável; o ID do documento é a chave de idempotência. Estorno = novo lançamento.
+      // Imutável; o ID do documento é a chave de idempotência e só vale o formato previsto para cada origem,
+      // sempre acoplado ao documento de negócio que o originou (pagamento, conta paga, recebimento, receita manual).
       match /cashEntries/{id} {
         allow read: if canFinance(t);
         allow create: if canMoney(t)
           && request.resource.data.createdBy == request.auth.uid
           && request.resource.data.amountCents is int && request.resource.data.amountCents > 0
           && request.resource.data.kind in ['in', 'out']
-          && request.resource.data.at is timestamp;
+          && request.resource.data.method is string
+          && request.resource.data.at is timestamp
+          && (
+            // Pagamento/estorno de hospedagem
+            (request.resource.data.source == 'stay'
+              && id == 'stay-' + request.resource.data.paymentKey
+              && existsAfter(paymentPath(t, request.resource.data.stayId, request.resource.data.paymentKey))
+              && getAfter(paymentPath(t, request.resource.data.stayId, request.resource.data.paymentKey)).data.amountCents == request.resource.data.amountCents)
+            // Pagamento de conta a pagar
+            || (canFinance(t) && request.resource.data.source == 'payable'
+              && request.resource.data.kind == 'out'
+              && id == 'pay-' + request.resource.data.payableId
+              && getAfter(payablePath(t, request.resource.data.payableId)).data.status == 'paid'
+              && getAfter(payablePath(t, request.resource.data.payableId)).data.amountCents == request.resource.data.amountCents
+              && get(payablePath(t, request.resource.data.payableId)).data.status == 'open')
+            // Recebimento de conta a receber
+            || (canFinance(t) && request.resource.data.source == 'receivable'
+              && request.resource.data.kind == 'in'
+              && id == 'rcv-' + request.resource.data.receivableId + '-' + request.resource.data.receiptKey
+              && getAfter(receivablePath(t, request.resource.data.receivableId)).data.lastReceiptKey == request.resource.data.receiptKey
+              && getAfter(receivablePath(t, request.resource.data.receivableId)).data.receivedCents
+                   - get(receivablePath(t, request.resource.data.receivableId)).data.receivedCents == request.resource.data.amountCents)
+            // Lançamento manual (entrada não-transferência gera receita no mesmo lote)
+            || (canFinance(t) && request.resource.data.source == 'manual'
+              && id.matches('manual-.+')
+              && (request.resource.data.kind == 'out' || request.resource.data.transfer == true
+                  || (existsAfter(revenuePath(t, id))
+                      && getAfter(revenuePath(t, id)).data.grossCents == request.resource.data.amountCents)))
+          );
         allow update, delete: if false;
       }
 
@@ -415,7 +487,15 @@ service cloud.firestore {
           && request.resource.data.kind in ['stay_closing', 'manual']
           && request.resource.data.grossCents is int && request.resource.data.grossCents >= 0
           && request.resource.data.deductionsCents is int && request.resource.data.deductionsCents >= 0
-          && request.resource.data.date is timestamp;
+          && request.resource.data.date is timestamp
+          && (
+            (request.resource.data.kind == 'stay_closing'
+              && id == 'checkout-' + request.resource.data.stayId
+              && get(stayPath(t, request.resource.data.stayId)).data.status == 'active'
+              && getAfter(stayPath(t, request.resource.data.stayId)).data.status == 'closed')
+            || (request.resource.data.kind == 'manual' && canFinance(t) && id.matches('manual-.+')
+                && existsAfter(cashPath(t, id)))
+          );
         allow update, delete: if false;
       }
 
@@ -426,20 +506,49 @@ service cloud.firestore {
 
       match /accountsPayable/{id} {
         allow read: if canFinance(t);
-        allow create: if canFinance(t) && request.resource.data.createdBy == request.auth.uid;
-        // Conta paga fica travada: valor e vencimento não mudam depois.
-        allow update: if canFinance(t)
-          && (resource.data.status != 'paid'
-              || (request.resource.data.amountCents == resource.data.amountCents
-                  && request.resource.data.status == 'paid'));
+        allow create: if canFinance(t) && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.status == 'open'
+          && request.resource.data.amountCents is int && request.resource.data.amountCents > 0;
+        allow update: if canFinance(t) && resource.data.status == 'open' && (
+          // editar conta em aberto
+          (request.resource.data.status == 'open'
+            && request.resource.data.amountCents is int && request.resource.data.amountCents > 0
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['category', 'supplier', 'description', 'amountCents', 'dueDate', 'competenceDate']))
+          // pagar: exige o lançamento de caixa correspondente no mesmo lote
+          || (request.resource.data.status == 'paid'
+            && request.resource.data.amountCents == resource.data.amountCents
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'paidAt', 'method', 'paidBy'])
+            && existsAfter(cashPath(t, 'pay-' + id)))
+          // cancelar com justificativa
+          || (request.resource.data.status == 'cancelled'
+            && request.resource.data.cancelReason is string && request.resource.data.cancelReason.size() > 0
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'cancelReason', 'cancelledBy'])));
         allow delete: if false;
       }
       match /accountsReceivable/{id} {
         allow read: if canFinance(t);
-        // Recepção cria o título no checkout quando sobra saldo.
-        allow create: if canMoney(t) && request.resource.data.createdBy == request.auth.uid;
+        // Recepção cria o título no checkout quando sobra saldo; título de hospedagem só nasce com o encerramento
+        // e com o valor exato do saldo pendente gravado no fechamento.
+        allow create: if canMoney(t) && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.amountCents is int && request.resource.data.amountCents > 0
+          && request.resource.data.receivedCents == 0
+          && request.resource.data.status == 'open'
+          && (!('stayId' in request.resource.data) || request.resource.data.stayId == null
+              || (id == 'stay-' + request.resource.data.stayId
+                  && getAfter(stayPath(t, request.resource.data.stayId)).data.status == 'closed'
+                  && getAfter(stayPath(t, request.resource.data.stayId)).data.closing.pendingCents == request.resource.data.amountCents));
+        // Recebimento parcial/total: monotônico, dentro do valor, status coerente e acoplado ao caixa.
         allow update: if canFinance(t)
-          && request.resource.data.amountCents == resource.data.amountCents;
+          && resource.data.status == 'open'
+          && request.resource.data.amountCents == resource.data.amountCents
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['receivedCents', 'status', 'lastReceivedAt', 'lastReceiptKey'])
+          && request.resource.data.receivedCents is int
+          && request.resource.data.receivedCents > resource.data.receivedCents
+          && request.resource.data.receivedCents <= resource.data.amountCents
+          && request.resource.data.status == (request.resource.data.receivedCents == resource.data.amountCents ? 'received' : 'open')
+          && request.resource.data.lastReceiptKey is string
+          && existsAfter(cashPath(t, 'rcv-' + id + '-' + request.resource.data.lastReceiptKey));
         allow delete: if false;
       }
       match /financialCategories/{id} {

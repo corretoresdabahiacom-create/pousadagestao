@@ -284,21 +284,30 @@ describe("papéis", () => {
   });
 });
 
+/** Pagamento + lançamento de caixa acoplado, no mesmo lote (como o app faz). */
+function payBatch(db: ReturnType<typeof staff>, key: string, amount: number, uid: string, over: { cashAmount?: number; stayId?: string; kind?: "payment" | "refund" } = {}) {
+  const stayId = over.stayId ?? "s1";
+  const kind = over.kind ?? "payment";
+  const b = writeBatch(db);
+  b.set(doc(db, `tenants/${A}/stays/${stayId}/payments/${key}`), { kind, amountCents: amount, method: "pix", note: "", createdBy: uid, createdAt: serverTimestamp() });
+  b.set(doc(db, `tenants/${A}/cashEntries/stay-${key}`), { kind: kind === "payment" ? "in" : "out", amountCents: over.cashAmount ?? amount, method: "pix", source: "stay", stayId, paymentKey: key, category: "Hospedagem", description: "t", transfer: false, createdBy: uid, at: serverTimestamp() });
+  return b.commit();
+}
+
 describe("integridade financeira", () => {
   it("pagamento é imutável e o mesmo ID não pode ser criado duas vezes (idempotência)", async () => {
     const db = staff(A, "reception");
-    const pay = { amountCents: 5000, kind: "payment", createdBy: `${A}-reception` };
-    await assertSucceeds(setDoc(doc(db, `tenants/${A}/stays/s1/payments/idem-1`), pay));
-    await assertFails(setDoc(doc(db, `tenants/${A}/stays/s1/payments/idem-1`), pay));
+    await assertSucceeds(payBatch(db, "idem-1", 5000, `${A}-reception`));
+    await assertFails(payBatch(db, "idem-1", 5000, `${A}-reception`));
     await assertFails(updateDoc(doc(db, `tenants/${A}/stays/s1/payments/p1`), { amountCents: 1 }));
     await assertFails(deleteDoc(doc(db, `tenants/${A}/stays/s1/payments/p1`)));
   });
 
   it("pagamento exige valor positivo e autoria verdadeira", async () => {
     const db = staff(A, "reception");
-    await assertFails(setDoc(doc(db, `tenants/${A}/stays/s1/payments/x1`), { amountCents: -5, kind: "payment", createdBy: `${A}-reception` }));
-    await assertFails(setDoc(doc(db, `tenants/${A}/stays/s1/payments/x2`), { amountCents: 5.5, kind: "payment", createdBy: `${A}-reception` }));
-    await assertFails(setDoc(doc(db, `tenants/${A}/stays/s1/payments/x3`), { amountCents: 100, kind: "payment", createdBy: "outro" }));
+    await assertFails(payBatch(db, "x1", -5, `${A}-reception`));
+    await assertFails(payBatch(db, "x2", 5.5, `${A}-reception`));
+    await assertFails(payBatch(db, "x3", 100, "outro"));
   });
 
   it("lançamento: total confere, nunca apaga, cancelamento exige justificativa", async () => {
@@ -487,12 +496,11 @@ describe("checkout em lote", () => {
   const checkout = (db: ReturnType<typeof staff>, uid: string, over: { revoke?: boolean } = {}) => {
     const b = writeBatch(db);
     if (over.revoke !== false) b.update(doc(db, `tenants/${A}/stayAccess/${HASH}`), { status: "revoked" });
-    b.set(doc(db, `tenants/${A}/revenues/checkout-s1`), { kind: "stay_closing", grossCents: 60000, deductionsCents: 0, date: serverTimestamp(), createdBy: uid, lines: [] });
-    b.set(doc(db, `tenants/${A}/accountsReceivable/stay-s1`), { amountCents: 1000, receivedCents: 0, status: "open", createdBy: uid });
+    b.set(doc(db, `tenants/${A}/revenues/checkout-s1`), { kind: "stay_closing", stayId: "s1", grossCents: 60000, deductionsCents: 0, date: serverTimestamp(), createdBy: uid, lines: [] });
+    b.set(doc(db, `tenants/${A}/accountsReceivable/stay-s1`), { amountCents: 1000, receivedCents: 0, status: "open", stayId: "s1", createdBy: uid });
     b.set(doc(db, `tenants/${A}/cleaningTasks/clean-s1`), { roomId: "r1", status: "pending", createdBy: uid });
-    b.set(doc(db, `tenants/${A}/cashEntries/stay-k1`), { kind: "in", amountCents: 500, at: serverTimestamp(), createdBy: uid });
     b.update(doc(db, `tenants/${A}/rooms/r1`), { status: "awaiting_cleaning", currentStayId: null, updatedAt: serverTimestamp() });
-    b.update(doc(db, `tenants/${A}/stays/s1`), { status: "closed", checkedOutAt: serverTimestamp() });
+    b.update(doc(db, `tenants/${A}/stays/s1`), { status: "closed", checkedOutAt: serverTimestamp(), closing: { pendingCents: 1000 } });
     return b.commit();
   };
   it("recepção encerra a hospedagem revogando o QR no mesmo lote", async () => {
@@ -510,12 +518,46 @@ describe("checkout em lote", () => {
   });
 });
 
+const manualIn = (db: ReturnType<typeof staff>, key: string, amount: number, uid: string, over: { revenue?: boolean; revAmount?: number; transfer?: boolean } = {}) => {
+  const b = writeBatch(db);
+  b.set(doc(db, `tenants/${A}/cashEntries/manual-${key}`), { kind: "in", amountCents: amount, method: "dinheiro", source: "manual", category: "Serviços", description: "d", transfer: over.transfer === true, at: serverTimestamp(), createdBy: uid });
+  if (over.revenue !== false) b.set(doc(db, `tenants/${A}/revenues/manual-${key}`), { kind: "manual", description: "d", grossCents: over.revAmount ?? amount, deductionsCents: 0, date: serverTimestamp(), lines: [], createdBy: uid });
+  return b.commit();
+};
+const openReg = (db: ReturnType<typeof staff>, id: string, uid: string) => {
+  const b = writeBatch(db);
+  b.set(doc(db, `tenants/${A}/cashRegisters/${id}`), { status: "open", openingCents: 1000, openedBy: uid, openedAt: serverTimestamp() });
+  b.set(doc(db, `tenants/${A}/registerLock/current`), { registerId: id });
+  return b.commit();
+};
+const closeReg = (db: ReturnType<typeof staff>, id: string, uid: string, over: { counted?: number; expected?: number; diff?: number; keepLock?: boolean } = {}) => {
+  const b = writeBatch(db);
+  const counted = over.counted ?? 900, expected = over.expected ?? 1000;
+  b.update(doc(db, `tenants/${A}/cashRegisters/${id}`), { status: "closed", closedAt: serverTimestamp(), closedBy: uid, countedCents: counted, expectedCents: expected, differenceCents: over.diff ?? counted - expected, note: "" });
+  if (!over.keepLock) b.delete(doc(db, `tenants/${A}/registerLock/current`));
+  return b.commit();
+};
+
 describe("caixa e razão financeiro", () => {
   it("financeiro abre e fecha o caixa; recepção não abre", async () => {
     const fin = staff(A, "finance");
-    await assertSucceeds(setDoc(doc(fin, `tenants/${A}/cashRegisters/c1`), { status: "open", openingCents: 1000, openedBy: `${A}-finance`, openedAt: serverTimestamp() }));
-    await assertFails(setDoc(doc(staff(A, "reception"), `tenants/${A}/cashRegisters/c2`), { status: "open", openingCents: 0, openedBy: `${A}-reception` }));
-    await assertSucceeds(updateDoc(doc(fin, `tenants/${A}/cashRegisters/c1`), { status: "closed", openingCents: 1000, countedCents: 900 }));
+    await assertSucceeds(openReg(fin, "c1", `${A}-finance`));
+    await assertFails(openReg(staff(A, "reception"), "c2", `${A}-reception`));
+    await assertSucceeds(closeReg(fin, "c1", `${A}-finance`));
+  });
+  it("só um caixa aberto por vez; depois de fechar, pode abrir outro", async () => {
+    const fin = staff(A, "finance");
+    await assertSucceeds(openReg(fin, "c1", `${A}-finance`));
+    await assertFails(openReg(fin, "c2", `${A}-finance`));
+    await assertSucceeds(closeReg(fin, "c1", `${A}-finance`));
+    await assertSucceeds(openReg(fin, "c3", `${A}-finance`));
+  });
+  it("fechamento exige diferença correta e liberar a trava", async () => {
+    const fin = staff(A, "finance");
+    await assertSucceeds(openReg(fin, "c1", `${A}-finance`));
+    await assertFails(closeReg(fin, "c1", `${A}-finance`, { diff: 0 }));
+    await assertFails(closeReg(fin, "c1", `${A}-finance`, { keepLock: true }));
+    await assertSucceeds(closeReg(fin, "c1", `${A}-finance`));
   });
   it("caixa fechado não reabre e a abertura não muda", async () => {
     await env.withSecurityRulesDisabled(async (ctx) => {
@@ -528,13 +570,14 @@ describe("caixa e razão financeiro", () => {
   });
   it("lançamentos de caixa: criam-se com autoria e valor positivo, e nunca mudam", async () => {
     const fin = staff(A, "finance");
-    const ok = { kind: "out", amountCents: 700, at: serverTimestamp(), createdBy: `${A}-finance` };
-    await assertSucceeds(setDoc(doc(fin, `tenants/${A}/cashEntries/e1`), ok));
-    await assertFails(setDoc(doc(fin, `tenants/${A}/cashEntries/e2`), { ...ok, amountCents: 0 }));
-    await assertFails(setDoc(doc(fin, `tenants/${A}/cashEntries/e3`), { ...ok, createdBy: "outro" }));
-    await assertFails(setDoc(doc(fin, `tenants/${A}/cashEntries/e4`), { ...ok, kind: "transfer" }));
-    await assertFails(updateDoc(doc(fin, `tenants/${A}/cashEntries/e1`), { amountCents: 1 }));
-    await assertFails(deleteDoc(doc(staff(A, "owner"), `tenants/${A}/cashEntries/e1`)));
+    const ok = { kind: "out", amountCents: 700, method: "dinheiro", source: "manual", category: "x", description: "d", transfer: false, at: serverTimestamp(), createdBy: `${A}-finance` };
+    await assertSucceeds(setDoc(doc(fin, `tenants/${A}/cashEntries/manual-e1`), ok));
+    await assertFails(setDoc(doc(fin, `tenants/${A}/cashEntries/manual-e2`), { ...ok, amountCents: 0 }));
+    await assertFails(setDoc(doc(fin, `tenants/${A}/cashEntries/manual-e3`), { ...ok, createdBy: "outro" }));
+    await assertFails(setDoc(doc(fin, `tenants/${A}/cashEntries/manual-e4`), { ...ok, kind: "transfer" }));
+    await assertFails(setDoc(doc(fin, `tenants/${A}/cashEntries/solto`), ok)); // id fora do formato
+    await assertFails(updateDoc(doc(fin, `tenants/${A}/cashEntries/manual-e1`), { amountCents: 1 }));
+    await assertFails(deleteDoc(doc(staff(A, "owner"), `tenants/${A}/cashEntries/manual-e1`)));
   });
   it("funcionário e hóspede não leem nem gravam no financeiro", async () => {
     await assertFails(getDocs(collection(staff(A, "staff"), `tenants/${A}/cashEntries`)));
@@ -546,17 +589,16 @@ describe("caixa e razão financeiro", () => {
   });
   it("receitas reconhecidas são imutáveis", async () => {
     const fin = staff(A, "finance");
-    const rev = { kind: "manual", grossCents: 1000, deductionsCents: 0, date: Timestamp.now(), createdBy: `${A}-finance` };
-    await assertSucceeds(setDoc(doc(fin, `tenants/${A}/revenues/r1`), rev));
-    await assertFails(updateDoc(doc(fin, `tenants/${A}/revenues/r1`), { grossCents: 1 }));
-    await assertFails(deleteDoc(doc(fin, `tenants/${A}/revenues/r1`)));
+    await assertSucceeds(manualIn(fin, "r1", 1000, `${A}-finance`));
+    await assertFails(updateDoc(doc(fin, `tenants/${A}/revenues/manual-r1`), { grossCents: 1 }));
+    await assertFails(deleteDoc(doc(fin, `tenants/${A}/revenues/manual-r1`)));
   });
   it("conta paga fica travada (valor não muda)", async () => {
     await env.withSecurityRulesDisabled(async (ctx) => {
       await setDoc(doc(ctx.firestore(), `tenants/${A}/accountsPayable/ap2`), { amountCents: 5000, status: "paid", createdBy: "x" });
     });
     await assertFails(updateDoc(doc(staff(A, "finance"), `tenants/${A}/accountsPayable/ap2`), { amountCents: 1 }));
-    await assertSucceeds(updateDoc(doc(staff(A, "finance"), `tenants/${A}/accountsPayable/ap1`), { status: "paid" }));
+    await assertFails(updateDoc(doc(staff(A, "finance"), `tenants/${A}/accountsPayable/ap2`), { status: "open" }));
   });
 });
 
@@ -671,5 +713,74 @@ describe("fase 1 — dados internos e campos da hospedagem", () => {
     const root = env.authenticatedContext("root2", { email_verified: true }).firestore();
     await assertSucceeds(getDocs(collection(root, "platform")));
     await assertSucceeds(setDoc(doc(root, "platform/plan-y"), { type: "plan", name: "Y", maxRooms: 9 }));
+  });
+});
+
+describe("fase 2 — integridade financeira acoplada", () => {
+  it("pagamento exige o lançamento de caixa do mesmo valor, no mesmo lote", async () => {
+    const db = staff(A, "reception");
+    await assertSucceeds(payBatch(db, "ok-1", 3000, `${A}-reception`));
+    await assertFails(payBatch(db, "bad-1", 3000, `${A}-reception`, { cashAmount: 2999 }));
+    await assertFails(setDoc(doc(db, `tenants/${A}/stays/s1/payments/sozinho`), { kind: "payment", amountCents: 100, method: "pix", note: "", createdBy: `${A}-reception`, createdAt: serverTimestamp() }));
+  });
+  it("estorno vira saída de caixa; não há pagamento em hospedagem encerrada", async () => {
+    const db = staff(A, "reception");
+    await assertSucceeds(payBatch(db, "rf-1", 500, `${A}-reception`, { kind: "refund" }));
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), `tenants/${A}/stays/sc`), { status: "closed", accessHash: "z".repeat(64) });
+    });
+    await assertFails(payBatch(db, "late-1", 500, `${A}-reception`, { stayId: "sc" }));
+  });
+  it("lançamento de caixa de hospedagem sem pagamento correspondente é negado", async () => {
+    const db = staff(A, "reception");
+    await assertFails(setDoc(doc(db, `tenants/${A}/cashEntries/stay-fantasma`), { kind: "in", amountCents: 100, method: "pix", source: "stay", stayId: "s1", paymentKey: "fantasma", category: "Hospedagem", description: "t", transfer: false, createdBy: `${A}-reception`, at: serverTimestamp() }));
+  });
+  it("entrada manual gera receita; transferência não; valores precisam bater", async () => {
+    const fin = staff(A, "finance");
+    await assertSucceeds(manualIn(fin, "m1", 800, `${A}-finance`));
+    await assertFails(manualIn(fin, "m2", 800, `${A}-finance`, { revenue: false }));
+    await assertFails(manualIn(fin, "m3", 800, `${A}-finance`, { revAmount: 700 }));
+    await assertSucceeds(manualIn(fin, "m4", 800, `${A}-finance`, { revenue: false, transfer: true }));
+  });
+  it("pagar conta exige a saída de caixa e o mesmo valor", async () => {
+    const fin = staff(A, "finance");
+    const pay = (amount: number, withCash = true) => {
+      const b = writeBatch(fin);
+      b.update(doc(fin, `tenants/${A}/accountsPayable/ap1`), { status: "paid", paidAt: Timestamp.now(), method: "pix", paidBy: `${A}-finance` });
+      if (withCash) b.set(doc(fin, `tenants/${A}/cashEntries/pay-ap1`), { kind: "out", amountCents: amount, method: "pix", source: "payable", payableId: "ap1", category: "x", description: "d", transfer: false, createdBy: `${A}-finance`, at: serverTimestamp() });
+      return b.commit();
+    };
+    await assertFails(pay(5000, false));
+    await assertFails(pay(4000));
+    await assertSucceeds(pay(5000));
+  });
+  describe("contas a receber", () => {
+    beforeEach(async () => {
+      await env.withSecurityRulesDisabled(async (ctx) => {
+        await setDoc(doc(ctx.firestore(), `tenants/${A}/accountsReceivable/ar1`), { amountCents: 1000, receivedCents: 0, status: "open", customerName: "X", createdBy: "x" });
+      });
+    });
+    const receive = (db: ReturnType<typeof staff>, key: string, total: number, status: string, cash: number | null) => {
+      const b = writeBatch(db);
+      b.update(doc(db, `tenants/${A}/accountsReceivable/ar1`), { receivedCents: total, status, lastReceivedAt: serverTimestamp(), lastReceiptKey: key });
+      if (cash !== null) b.set(doc(db, `tenants/${A}/cashEntries/rcv-ar1-${key}`), { kind: "in", amountCents: cash, method: "pix", source: "receivable", receivableId: "ar1", receiptKey: key, category: "Hospedagem", description: "d", transfer: false, createdBy: `${A}-finance`, at: serverTimestamp() });
+      return b.commit();
+    };
+    it("recebimento parcial e total acoplados ao caixa", async () => {
+      const fin = staff(A, "finance");
+      await assertSucceeds(receive(fin, "k1", 400, "open", 400));
+      await assertSucceeds(receive(fin, "k2", 1000, "received", 600));
+    });
+    it("nega valor acima do saldo, status incoerente, recuo e recebimento sem caixa", async () => {
+      const fin = staff(A, "finance");
+      await assertFails(receive(fin, "k1", 1200, "received", 1200));
+      await assertFails(receive(fin, "k1", 400, "received", 400));
+      await assertFails(receive(fin, "k1", 400, "open", 300));
+      await assertFails(receive(fin, "k1", 400, "open", null));
+      await assertFails(receive(fin, "k1", 0, "open", 0));
+    });
+    it("recepção não recebe título", async () => {
+      await assertFails(receive(staff(A, "reception"), "k1", 400, "open", 400));
+    });
   });
 });

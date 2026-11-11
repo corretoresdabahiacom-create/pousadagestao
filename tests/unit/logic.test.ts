@@ -56,3 +56,17 @@ describe("regra de 24 h e dinheiro", () => {
     expect(parseBRLToCents("abc")).toBeNull();
   });
 });
+
+describe("fase 2 — parcelas no fim do mês", () => {
+  it("31/01 + 1 mês cai em 28/02 (ou 29), nunca em março", async () => {
+    const { addMonths } = await import("@/lib/finance");
+    const d = addMonths(new Date(2027, 0, 31, 12), 1);
+    expect(d.getMonth()).toBe(1);
+    expect(d.getDate()).toBe(28);
+    const e = addMonths(new Date(2027, 0, 31, 12), 2);
+    expect(e.getMonth()).toBe(2);
+    expect(e.getDate()).toBe(31);
+    const f = addMonths(new Date(2027, 10, 30, 12), 3);
+    expect([f.getFullYear(), f.getMonth(), f.getDate()]).toEqual([2028, 1, 29]);
+  });
+});

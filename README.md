@@ -30,9 +30,10 @@ Sobe o emulador do Firestore e roda `tests/rules`. Rode sempre antes de publicar
 ```bash
 npx firebase login
 npx firebase deploy --only firestore:rules --project pousadagestao-2f344   # regras
-npm run build                                                              # gera a pasta out/
-npx firebase deploy --only hosting --project pousadagestao-2f344           # site
 ```
+
+O **site** não é publicado pelo Firebase Hosting: a Cloudflare faz o build e o deploy sozinha a cada `git push` na branch `main`
+(configuração em `wrangler.jsonc`, pasta `out/`). Só as **regras** são publicadas à mão, com o comando acima.
 
 ## Estado atual
 

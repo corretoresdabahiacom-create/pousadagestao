@@ -9,12 +9,10 @@
     "lint": "eslint",
     "test:rules": "firebase emulators:exec --only firestore --project pousadagestao-rules-test \"vitest run tests/rules\"",
     "typecheck": "tsc --noEmit",
-    "deploy:cloudflare": "next build && wrangler pages deploy out --project-name pousadagestor --branch main",
     "test": "vitest run tests/unit"
   },
   "dependencies": {
     "firebase": "^13.2.0",
-    "firebase-admin": "^14.5.0",
     "next": "16.4.4",
     "qrcode": "^1.5.4",
     "react": "19.3.0",

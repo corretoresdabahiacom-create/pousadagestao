@@ -26,7 +26,7 @@ Não garantem (limitação do plano gratuito): somas e saldos agregados (calcula
 ## 3. QR Code e acesso do hóspede
 
 1. Check-in (transação no cliente): gera token com `crypto.getRandomValues` (32 bytes). Calcula SHA-256 do token e grava **só o hash** em `stayAccess/{hash}` e em `stays/{id}.accessHash`.
-2. O QR contém `/h/#<token>`. O token fica no fragmento da URL, que não vai ao servidor nem a logs. Sem dados pessoais no código.
+2. O QR contém `/h/?t=<tenantId>#<token>`. O `tenantId` (público) vai na consulta; o token fica no fragmento da URL, que não vai ao servidor nem a logs. Sem dados pessoais no código.
 3. O portal calcula o hash, entra como anônimo e cria `stayAccess/{hash}/sessions/{uid}`. As Rules só permitem isso se o acesso estiver `active`.
 4. Toda leitura do hóspede exige a sessão **e** o acesso ativo. Revogar (`status = revoked`) derruba o acesso imediatamente, inclusive para páginas abertas.
 5. Novo check-in gera novo token; o antigo nunca é reativado (Rules negam `revoked` → `active`).
@@ -42,7 +42,7 @@ Alternativas gratuitas para push com navegador fechado, a decidir depois: Cloudf
 
 ## 5. Arquivos
 
-Cloud Storage para Firebase pode exigir Blaze em projetos novos. Por isso:
+O projeto **não usa Cloud Storage** (exigiria Blaze). Por isso:
 - Logomarca e fotos de quartos: imagens reduzidas no navegador e gravadas como texto no Firestore (limite de 1 MiB por documento; logo limitada a ~300 KB pelas Rules).
 - Documentos pessoais: **não armazenar imagens** de documentos. Coletar só o necessário em texto (LGPD, minimização).
 - Comprovantes e anexos: fora do MVP até haver Storage.
@@ -51,7 +51,7 @@ Cloud Storage para Firebase pode exigir Blaze em projetos novos. Por isso:
 
 ```
 platformAdmins/{uid}              # criado manualmente no console
-platform/plans/{planId}
+platform/plan-{planId}              # só o admin master lê e escreve
 tenants/{tenantId}                # name, ownerUid, planId, status, limits
   publicInfo/main                 # dados exibidos no portal do hóspede
   settings/main
@@ -68,7 +68,12 @@ tenants/{tenantId}                # name, ownerUid, planId, status, limits
   stayAccess/{tokenHash}          # stayId, status
     sessions/{uid}                # sessão do hóspede
     push/{uid}                    # reservado
-  cashRegisters/{id}/movements/{id}
+  stayNotes/{stayId}              # observação interna (o hóspede não lê)
+  cashRegisters/{id}              # abertura/fechamento do caixa
+  registerLock/current            # trava: só um caixa aberto por vez
+  cashEntries/{id}                # razão de caixa imutável; ID por origem (stay-, pay-, rcv-, manual-)
+  revenues/{id}                   # receitas de competência (checkout-<stayId>, manual-<chave>)
+  recurringExpenses/{id}
   accountsPayable/{id}
   accountsReceivable/{id}
   financialCategories/{id}
@@ -91,7 +96,7 @@ Regras de negócio do prompt mestre mantidas: competência e caixa, transferênc
 
 ## 9. Hospedagem e custos
 
-Firebase Hosting no Spark: cota gratuita suficiente para o MVP. Cotas do Firestore no Spark: 50 mil leituras e 20 mil gravações por dia; avaliar quando houver várias pousadas. Cada avaliação de Rule que consulta papel (`get`) conta como leitura.
+O site é estático (`out/`) e publicado em **Cloudflare Workers (static assets)**, com build automático a cada push na `main`. O Firebase fornece só Firestore e Auth (Spark). Cotas do Firestore no Spark: 50 mil leituras e 20 mil gravações por dia; avaliar quando houver várias pousadas. Cada avaliação de Rule que consulta papel (`get`) conta como leitura.
 
 ## 10. O que migrar para Blaze no futuro
 
@@ -133,3 +138,17 @@ Não há horário fixo de check-in/checkout. Cada hospedagem tem entrada em qual
 - Auditoria (`auditLogs`) é só de acréscimo; leitura restrita ao proprietário.
 - Exportações CSV/XLSX neutralizam "injeção de fórmula" (texto iniciado por `= + - @`).
 - Pendente fora do escopo do plano gratuito: limite de tentativas no servidor, backup automático, push com navegador fechado.
+
+
+## 12. Integridade financeira (Fase 2)
+
+Sem servidor, a coerência é garantida por regras que acoplam documentos no mesmo lote (`getAfter`/`existsAfter`):
+- `payments/{k}` só existe com `cashEntries/stay-{k}` de mesmo valor/método e com a hospedagem ativa.
+- `accountsPayable` só vai a `paid` junto de `cashEntries/pay-{id}`; `accountsReceivable` só recebe junto de `cashEntries/rcv-{id}-{chave}` (valor = diferença do recebido), em transação no cliente.
+- Entrada manual (não transferência) exige `revenues/manual-{chave}` igual.
+- `registerLock/current` impede dois caixas abertos; o fechamento confere `diferença = contado − esperado`.
+- Limitações: teto de estorno e conferência da conta no checkout são feitos no aplicativo (coleções não entram em transações do cliente nem somam em regras).
+
+## 13. Backup
+
+O Spark não tem exportação agendada. Procedimento manual: o painel gera CSV/XLSX dos relatórios; para cópia completa, use `gcloud firestore export` (exige Blaze) ou exporte pelos relatórios mensalmente e guarde fora do Firebase.

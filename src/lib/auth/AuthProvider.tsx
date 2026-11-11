@@ -12,6 +12,7 @@ import {
 import { onAuthStateChanged, reload, signOut, type User } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 import { getFirebase } from "@/lib/firebase/client";
+import { setDisplayTimezone } from "@/lib/format";
 import type { Role, TenantInfo } from "@/lib/types";
 
 export interface Membership {
@@ -42,10 +43,12 @@ async function loadMembership(user: User): Promise<{ membership: Membership | nu
   if (!tenantId) return { membership: null, tenant: null };
 
   try {
-    const [m, t] = await Promise.all([
+    const [m, t, st] = await Promise.all([
       getDoc(doc(db, `tenants/${tenantId}/members/${user.uid}`)),
       getDoc(doc(db, `tenants/${tenantId}`)),
+      getDoc(doc(db, `tenants/${tenantId}/settings/main`)).catch(() => null),
     ]);
+    setDisplayTimezone(st?.exists() ? (st.data().timezone as string | undefined) : undefined);
     if (!m.exists() || m.data().active !== true || !t.exists()) return { membership: null, tenant: null };
     const td = t.data();
     return {

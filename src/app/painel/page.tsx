@@ -6,7 +6,7 @@ import { useAuth } from "@/lib/auth/AuthProvider";
 import { useRooms } from "@/lib/useRooms";
 import { type RoomStatus } from "@/lib/types";
 import { useActiveStays } from "@/lib/useStays";
-import { useCashEntries, usePayables, useReceivables } from "@/lib/finance";
+import { dreCompetencia, useCashEntries, usePayables, useReceivables, useRevenues } from "@/lib/finance";
 import { useNow } from "@/lib/useNow";
 import { DAY_MS, fmtDateTime, startOfDay } from "@/lib/format";
 import { formatCents } from "@/lib/money";
@@ -26,6 +26,9 @@ export default function DashboardPage() {
   const cash = useCashEntries(isFin ? t : undefined, since);
   const pays = usePayables(isFin ? t : undefined);
   const recv = useReceivables(isFin ? t : undefined);
+  const monthStart = useMemo(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); }, []);
+  const monthEnd = useMemo(() => new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 1), [monthStart]);
+  const revs = useRevenues(isFin ? t : undefined, monthStart);
 
   if (error) return <Alert>{error}</Alert>;
   if (!rooms) return <Spinner />;
@@ -100,6 +103,7 @@ export default function DashboardPage() {
 
       {isFin && cash.data && pays.data && recv.data && (
         <>
+          {revs.data && <MonthSummary revs={revs.data} pays={pays.data} cash={cash.data} from={monthStart} to={monthEnd} />}
           <div className="grid gap-4 sm:grid-cols-3">
             <Card><p className="text-sm text-slate-600">Entradas (últimos 7 dias)</p><p className="mt-1 text-2xl font-bold text-emerald-700">{formatCents(cash.data.filter((e) => e.kind === "in" && !e.transfer).reduce((x, e) => x + e.amountCents, 0))}</p></Card>
             <Card><p className="text-sm text-slate-600">Contas a pagar vencidas</p><p className="mt-1 text-2xl font-bold text-red-700">{formatCents(pays.data.filter((p) => p.status === "open" && p.dueDate.getTime() < now).reduce((x, p) => x + p.amountCents, 0))}</p></Card>
@@ -109,6 +113,25 @@ export default function DashboardPage() {
         </>
       )}
     </div>
+  );
+}
+
+/** Resumo gerencial do mês (competência): receita reconhecida no checkout, despesas pela competência e resultado. */
+function MonthSummary({ revs, pays, from, to }: { revs: Parameters<typeof dreCompetencia>[0]; pays: Parameters<typeof dreCompetencia>[1]; cash: unknown; from: Date; to: Date }) {
+  const dre = dreCompetencia(revs, pays, from, to);
+  const month = from.toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+  const warn = dre.warnings.filter((w) => !w.startsWith("Sem dados"));
+  return (
+    <Card>
+      <h2 className="mb-2 text-base font-semibold">Resultado de {month} <span className="text-xs font-normal text-slate-500">(competência — visão gerencial, não contábil)</span></h2>
+      <div className="grid gap-4 sm:grid-cols-3">
+        <div><p className="text-sm text-slate-600">Receita</p><p className="text-2xl font-bold text-emerald-700">{formatCents(dre.revenueCents)}</p></div>
+        <div><p className="text-sm text-slate-600">Despesas</p><p className="text-2xl font-bold text-red-700">{formatCents(dre.expenseCents)}</p></div>
+        <div><p className="text-sm text-slate-600">Resultado</p><p className={`text-2xl font-bold ${dre.resultCents < 0 ? "text-red-700" : "text-slate-900"}`}>{formatCents(dre.resultCents)}</p></div>
+      </div>
+      {warn.map((w) => <p key={w} className="mt-2 text-xs text-amber-700">{w}</p>)}
+      {dre.revenue.length === 0 && dre.expense.length === 0 && <p className="mt-2 text-xs text-slate-500">Sem dados suficientes neste mês.</p>}
+    </Card>
   );
 }
 

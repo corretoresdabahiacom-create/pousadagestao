@@ -9,14 +9,25 @@ export function toDate(v: unknown): Date | null {
   return typeof t.toDate === "function" ? t.toDate() : null;
 }
 
+/** Fuso da pousada (settings/main.timezone), aplicado a todas as datas exibidas quando nenhum fuso é passado. */
+let displayTz: string | undefined;
+export function setDisplayTimezone(tz?: string) {
+  try {
+    if (tz) new Intl.DateTimeFormat("pt-BR", { timeZone: tz });
+    displayTz = tz || undefined;
+  } catch {
+    displayTz = undefined; // fuso inválido: volta ao do navegador
+  }
+}
+
 export function fmtDateTime(d: Date | null | undefined, tz?: string): string {
   if (!d) return "—";
-  return d.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short", timeZone: tz });
+  return d.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short", timeZone: tz ?? displayTz });
 }
 
 export function fmtDate(d: Date | null | undefined, tz?: string): string {
   if (!d) return "—";
-  return d.toLocaleDateString("pt-BR", { timeZone: tz });
+  return d.toLocaleDateString("pt-BR", { timeZone: tz ?? displayTz });
 }
 
 /** Valor para <input type="datetime-local"> no horário local do navegador. */

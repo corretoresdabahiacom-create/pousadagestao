@@ -675,6 +675,8 @@ describe("fase 1 — dados internos e campos da hospedagem", () => {
     await assertFails(updateDoc(ref, { plannedCheckOutAt: out5, nights: 5, lodgingCents: 100000, totalPlannedCents: 1, updatedAt: serverTimestamp() }));
     await assertFails(updateDoc(ref, { plannedCheckOutAt: out5, nights: 5, lodgingCents: 1, totalPlannedCents: 1, updatedAt: serverTimestamp() }));
     await assertFails(updateDoc(ref, { plannedCheckOutAt: TS_IN, nights: 5, lodgingCents: 100000, totalPlannedCents: 100000, updatedAt: serverTimestamp() }));
+    // diárias que não correspondem às datas (5 dias marcados como 2 diárias)
+    await assertFails(updateDoc(ref, { plannedCheckOutAt: out5, nights: 2, lodgingCents: 40000, totalPlannedCents: 40000, updatedAt: serverTimestamp() }));
     await assertSucceeds(updateDoc(ref, { plannedCheckOutAt: out5, nights: 5, lodgingCents: 100000, totalPlannedCents: 100000, updatedAt: serverTimestamp() }));
   });
 
@@ -782,5 +784,15 @@ describe("fase 2 — integridade financeira acoplada", () => {
     it("recepção não recebe título", async () => {
       await assertFails(receive(staff(A, "reception"), "k1", 400, "open", 400));
     });
+  });
+});
+
+describe("fase 6 — equipe", () => {
+  it("dono só altera papel/ativo de outro membro, com papel válido", async () => {
+    const owner = staff(A, "owner");
+    await assertFails(updateDoc(doc(owner, `tenants/${A}/members/${A}-reception`), { role: "superadmin" }));
+    await assertFails(updateDoc(doc(owner, `tenants/${A}/members/${A}-reception`), { name: "x" }));
+    await assertSucceeds(updateDoc(doc(owner, `tenants/${A}/members/${A}-reception`), { active: false }));
+    await assertFails(updateDoc(doc(owner, `tenants/${A}/members/${A}-owner`), { active: false }));
   });
 });

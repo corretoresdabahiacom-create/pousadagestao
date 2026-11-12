@@ -62,7 +62,13 @@ service cloud.firestore {
         && d.discountCents is int && d.discountCents >= 0
         && d.feesCents is int && d.feesCents >= 0
         && d.lodgingCents == d.dailyRateCents * d.nights
-        && d.totalPlannedCents == plannedTotal(d);
+        && d.totalPlannedCents == plannedTotal(d)
+        && d.nights == nightsFor(d);
+    }
+    // Diárias = períodos de 24 h entre entrada e saída prevista, no mínimo 1 (igual ao app: countNights).
+    function nightsFor(d) {
+      return math.ceil((d.plannedCheckOutAt.toMillis() - d.checkInAt.toMillis()) / 86400000.0) < 1
+        ? 1 : math.ceil((d.plannedCheckOutAt.toMillis() - d.checkInAt.toMillis()) / 86400000.0);
     }
 
     // ---------------- Hóspede (QR Code) ----------------
@@ -180,7 +186,10 @@ service cloud.firestore {
               == request.resource.data.role;
 
         // Proprietário gerencia papéis e ativa/desativa; ninguém altera o próprio papel.
-        allow update: if isOwner(t) && uid != request.auth.uid;
+        allow update: if isOwner(t) && uid != request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role', 'active'])
+          && request.resource.data.role in ['owner', 'admin', 'reception', 'finance', 'staff']
+          && request.resource.data.active is bool;
         allow delete: if false;
       }
 

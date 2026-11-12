@@ -151,4 +151,4 @@ Sem servidor, a coerência é garantida por regras que acoplam documentos no mes
 
 ## 13. Backup
 
-O Spark não tem exportação agendada. Procedimento manual: o painel gera CSV/XLSX dos relatórios; para cópia completa, use `gcloud firestore export` (exige Blaze) ou exporte pelos relatórios mensalmente e guarde fora do Firebase.
+O Spark não tem exportação agendada. Em **Relatórios → Backup completo** (dono/admin) o painel baixa um JSON com todos os dados da pousada (sem hashes de QR nem chat); guarde fora do Firebase, de preferência todo mês. A cópia de servidor (`gcloud firestore export`) exige o plano Blaze.

@@ -4,10 +4,11 @@ import { useState } from "react";
 import { Timestamp, collection, getDocs, query, where } from "firebase/firestore";
 import { getFirebase } from "@/lib/firebase/client";
 import { friendlyError, useAuth } from "@/lib/auth/AuthProvider";
+import { buildBackup } from "@/lib/backup";
 import { dreCaixa, dreCompetencia, loadAllCash, parsePayable, parseReceivable, parseRevenue, type Dre } from "@/lib/finance";
 import { parseStay } from "@/lib/stays";
 import { payLabel } from "@/lib/stays";
-import { downloadCsv, downloadXlsx, type Table } from "@/lib/exporters";
+import { download, downloadCsv, downloadXlsx, type Table } from "@/lib/exporters";
 import { fmtDate, fmtDateTime } from "@/lib/format";
 import { formatCents } from "@/lib/money";
 import { Alert, Button, Card, Field, Input, Select } from "@/components/ui";
@@ -34,6 +35,7 @@ export default function ReportsPage() {
   const { membership } = useAuth();
   const t = membership?.tenantId; const role = membership?.role ?? "";
   const isFin = ["owner", "admin", "finance"].includes(role);
+  const [backingUp, setBackingUp] = useState(false);
   const [kind, setKind] = useState<Kind>("hospedagens");
   const [from, setFrom] = useState(() => { const d = new Date(); d.setDate(1); return iso(d); });
   const [to, setTo] = useState(() => iso(new Date()));
@@ -42,6 +44,16 @@ export default function ReportsPage() {
   const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
 
   if (!t) return null;
+  const canBackup = ["owner", "admin"].includes(role);
+  const runBackup = async () => {
+    if (!t) return;
+    setErr(""); setBackingUp(true);
+    try {
+      const r = await buildBackup(t);
+      download(new Blob([r.json], { type: "application/json" }), `backup-pousada-${new Date().toISOString().slice(0, 10)}.json`);
+      if (r.skipped.length) setErr(`Backup gerado, mas sem permissão para: ${r.skipped.join(", ")}.`);
+    } catch (e) { setErr(friendlyError(e)); } finally { setBackingUp(false); }
+  };
   if (!isFin && role !== "reception") return <Alert>Seu perfil não tem acesso a relatórios.</Alert>;
   const kinds = KINDS.filter((k) => isFin || !k.finance);
 
@@ -100,6 +112,13 @@ export default function ReportsPage() {
           <div className="flex items-end"><Button onClick={generate} loading={busy} className="w-full">Gerar</Button></div>
         </div>
       </Card>
+      {canBackup && (
+        <Card>
+          <h2 className="text-base font-semibold">Backup completo</h2>
+          <p className="mb-2 text-sm text-slate-600">Baixa um arquivo com todos os dados da pousada (quartos, hóspedes, hospedagens, financeiro). Guarde fora do Firebase (e-mail, Drive, pen drive), de preferência todo mês. Contém dados pessoais de hóspedes: não compartilhe.</p>
+          <Button variant="secondary" onClick={runBackup} disabled={backingUp}>{backingUp ? "Gerando…" : "Baixar backup (JSON)"}</Button>
+        </Card>
+      )}
       {err && <Alert>{err}</Alert>}
       {warn.map((w) => <Alert key={w} kind="info">{w}</Alert>)}
       {table && (

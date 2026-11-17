@@ -34,8 +34,14 @@ service cloud.firestore {
     function staffUser() { return authed() && request.auth.token.firebase.sign_in_provider != 'anonymous'; }
     function verifiedStaff() { return staffUser() && request.auth.token.email_verified == true; }
 
+    // Administrador da plataforma: está em platformAdmins E digitou a senha há menos de 30 minutos
+    // (auth_time do token). O painel /master pede a senha de novo para renovar essa janela.
+    function recentLogin() {
+      return request.auth.token.auth_time is number
+        && request.auth.token.auth_time * 1000 > request.time.toMillis() - 1800000;
+    }
     function isPlatformAdmin() {
-      return staffUser() && exists(/databases/$(database)/documents/platformAdmins/$(request.auth.uid));
+      return staffUser() && recentLogin() && exists(/databases/$(database)/documents/platformAdmins/$(request.auth.uid));
     }
 
     // ---------------- Papéis (membros da pousada) ----------------
@@ -90,6 +96,17 @@ service cloud.firestore {
         && getAfter(schedulePath(t, roomId)).data.items[id].end == d.plannedCheckOutAt;
     }
 
+    function smallInt(v) { return v is int && v >= 0 && v <= 1000000; }
+    function statsOk(d) {
+      return d.keys().hasOnly(['rooms', 'members', 'staysActive', 'stays30d', 'staysTotal', 'reservationsOpen',
+                'guests', 'city', 'state', 'reportedAt', 'lastActiveAt'])
+        && smallInt(d.rooms) && smallInt(d.members) && smallInt(d.staysActive) && smallInt(d.stays30d)
+        && smallInt(d.staysTotal) && smallInt(d.reservationsOpen) && smallInt(d.guests)
+        && d.get('city', '') is string && d.get('city', '').size() <= 60
+        && d.get('state', '') is string && d.get('state', '').size() <= 2
+        && d.lastActiveAt == request.time;
+    }
+
     // ---------------- Hóspede (QR Code) ----------------
     // Sessão do hóspede: existe sessions/{uid} sob o hash E o acesso segue ativo (não revogado).
     function guestHas(t, h, s) {
@@ -122,6 +139,20 @@ service cloud.firestore {
     // Nem a equipe das pousadas nem hóspedes (contas anônimas) leem esta coleção.
     match /platform/{document=**} {
       allow read, write: if isPlatformAdmin();
+    }
+
+    // ---------------- Uso agregado (telemetria sem dados pessoais) ----------------
+    // Um documento por pousada com apenas CONTAGENS e a data da última atividade. É o único dado
+    // de uso que o dono da plataforma enxerga: nenhum nome, documento, contato ou valor entra aqui.
+    // Só o gerente da própria pousada grava as contagens; qualquer membro atualiza a "última atividade".
+    match /tenantStats/{t} {
+      allow read: if isPlatformAdmin();
+      allow create: if isManager(t) && statsOk(request.resource.data) && request.resource.data.reportedAt == request.time;
+      allow update: if (isManager(t) && statsOk(request.resource.data) && request.resource.data.reportedAt == request.time)
+        || (isMember(t)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastActiveAt'])
+            && request.resource.data.lastActiveAt == request.time);
+      allow delete: if false;
     }
 
     // ---------------- Pousada ----------------

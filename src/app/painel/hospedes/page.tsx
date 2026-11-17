@@ -7,6 +7,7 @@ import { getFirebase } from "@/lib/firebase/client";
 import { audit } from "@/lib/audit";
 import { friendlyError, useAuth } from "@/lib/auth/AuthProvider";
 import { guestDoc, type GuestData } from "@/lib/stays";
+import { anonymizeGuest } from "@/lib/privacy";
 import { emptyGuest, matchGuest, useGuests, type GuestRecord } from "@/lib/useGuests";
 import { GuestFields } from "@/components/GuestFields";
 import { Alert, Button, Card, EmptyState, Input, Modal, Spinner } from "@/components/ui";
@@ -66,6 +67,24 @@ export default function GuestsPage() {
                 </div>
                 <div className="flex gap-2">
                   <Button variant="secondary" className="px-3 py-1.5" onClick={() => setEditing(g)}>Editar</Button>
+                  {g.fullName !== "Hóspede anonimizado" && (
+                    <Button
+                      variant="ghost"
+                      className="px-3 py-1.5"
+                      onClick={async () => {
+                        if (!confirm(`Anonimizar ${g.fullName}? Nome, documento, contatos, nascimento e observações do cadastro serão apagados e isso não pode ser desfeito. Use quando o hóspede pedir a eliminação dos dados (LGPD).`)) return;
+                        try {
+                          await anonymizeGuest(tenantId, user.uid, g.id);
+                          setNotice("Cadastro anonimizado.");
+                          reload();
+                        } catch (e) {
+                          setNotice(friendlyError(e));
+                        }
+                      }}
+                    >
+                      Anonimizar (LGPD)
+                    </Button>
+                  )}
                   <Link href={`/painel/checkin/?guest=${g.id}`} className="inline-flex items-center rounded-lg bg-brand-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-800">
                     Novo check-in
                   </Link>

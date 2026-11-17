@@ -23,7 +23,7 @@ export default function TermsPage() {
         <li>O sistema não emite nota fiscal nem processa pagamentos online.</li>
       </ul>
       <h2>Planos, suspensão e cancelamento</h2>
-      <p>O uso pode ter limites por plano (por exemplo, número de quartos). A conta pode ser suspensa por inadimplência ou uso indevido; os dados são mantidos pelo prazo informado ao proprietário para exportação.</p>
+      <p>Toda pousada nova começa com um período de teste gratuito de 14 dias. Depois dele, o uso depende de contratação de um plano, que pode ter limites (por exemplo, número de quartos). A cobrança é combinada diretamente com o fornecedor: o sistema não processa pagamentos. A conta pode ser suspensa por inadimplência ou uso indevido; os dados são mantidos pelo prazo informado ao proprietário para exportação. O contrato pode ser cancelado a qualquer momento e, a pedido do proprietário, os dados da pousada são eliminados em até 30 dias, ressalvadas obrigações legais.</p>
       <h2>Disponibilidade</h2>
       <p>Buscamos manter o serviço disponível, mas ele depende de provedores externos e pode sofrer interrupções. Recomenda-se exportar relatórios periodicamente.</p>
       <h2>Privacidade</h2>

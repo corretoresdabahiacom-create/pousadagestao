@@ -27,7 +27,7 @@ function LoginForm() {
   const next = safeNext(params.get("next"));
   const { loading, user } = useAuth();
 
-  const [mode, setMode] = useState<Mode>("login");
+  const [mode, setMode] = useState<Mode>(params.get("modo") === "cadastro" ? "signup" : "login");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");

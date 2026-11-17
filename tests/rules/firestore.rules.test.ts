@@ -57,6 +57,7 @@ beforeEach(async () => {
   });
 });
 
+const nowSec = () => Math.floor(Date.now() / 1000);
 const staff = (tenantId: string, role: string) => env.authenticatedContext(`${tenantId}-${role}`, { email_verified: true }).firestore();
 const guest = (uid: string) => env.authenticatedContext(uid, { firebase: { sign_in_provider: "anonymous" } }).firestore();
 
@@ -630,7 +631,7 @@ describe("planos, limites e suspensão", () => {
   });
   it("administrador da plataforma altera plano e suspende; os demais não", async () => {
     await env.withSecurityRulesDisabled(async (ctx) => { await setDoc(doc(ctx.firestore(), "platformAdmins/root"), { x: 1 }); });
-    const root = env.authenticatedContext("root", { email_verified: true }).firestore();
+    const root = env.authenticatedContext("root", { email_verified: true, auth_time: nowSec() }).firestore();
     await assertSucceeds(updateDoc(doc(root, `tenants/${A}`), { planId: "premium", limits: { maxRooms: 50 } }));
     await assertSucceeds(updateDoc(doc(root, `tenants/${A}`), { status: "suspended" }));
     await assertFails(updateDoc(doc(staff(B, "owner"), `tenants/${B}`), { status: "suspended" }));
@@ -712,7 +713,7 @@ describe("fase 1 — dados internos e campos da hospedagem", () => {
     await assertFails(getDoc(doc(g, "platform/plan-x")));
     await assertFails(getDocs(collection(g, "platform")));
     await assertFails(getDoc(doc(staff(A, "owner"), "platform/log1")));
-    const root = env.authenticatedContext("root2", { email_verified: true }).firestore();
+    const root = env.authenticatedContext("root2", { email_verified: true, auth_time: nowSec() }).firestore();
     await assertSucceeds(getDocs(collection(root, "platform")));
     await assertSucceeds(setDoc(doc(root, "platform/plan-y"), { type: "plan", name: "Y", maxRooms: 9 }));
   });
@@ -930,5 +931,60 @@ describe("fase 8 — reservas futuras", () => {
     await assertFails(checkin("s1", { createStay: false })); // hospedagem já existente
     await assertFails(checkin("k-s1", { keepSchedule: true }));
     await assertSucceeds(checkin("k-s2"));
+  });
+});
+
+describe("Fase 9 – painel do dono e uso agregado", () => {
+  const stats = (over: Record<string, unknown> = {}) => ({
+    rooms: 5, members: 2, staysActive: 1, stays30d: 7, staysTotal: 20, reservationsOpen: 2, guests: 15,
+    city: "Salvador", state: "BA", reportedAt: serverTimestamp(), lastActiveAt: serverTimestamp(), ...over,
+  });
+  const adminCtx = (uid: string, authTime: number) => env.authenticatedContext(uid, { email_verified: true, auth_time: authTime }).firestore();
+
+  it("administrador sem senha recente (login antigo) perde o acesso ao painel", async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => { await setDoc(doc(ctx.firestore(), "platformAdmins/old"), { x: 1 }); });
+    const velho = adminCtx("old", nowSec() - 3600);
+    await assertFails(getDocs(collection(velho, "tenants")));
+    await assertFails(getDocs(collection(velho, "platform")));
+    await assertSucceeds(getDoc(doc(velho, "platformAdmins/old"))); // ainda consegue ver que é admin e pedir a senha
+    const novo = adminCtx("old", nowSec() - 60);
+    await assertSucceeds(getDocs(collection(novo, "tenants")));
+  });
+  it("token sem auth_time nunca vale como administrador", async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => { await setDoc(doc(ctx.firestore(), "platformAdmins/sem"), { x: 1 }); });
+    await assertFails(getDocs(collection(env.authenticatedContext("sem", { email_verified: true }).firestore(), "tenants")));
+  });
+  it("gerente grava contagens; administrador da plataforma lê; ninguém mais lê", async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => { await setDoc(doc(ctx.firestore(), "platformAdmins/root3"), { x: 1 }); });
+    await assertSucceeds(setDoc(doc(staff(A, "owner"), `tenantStats/${A}`), stats()));
+    await assertSucceeds(setDoc(doc(staff(A, "admin"), `tenantStats/${A}`), stats({ rooms: 6 })));
+    const root = adminCtx("root3", nowSec());
+    await assertSucceeds(getDoc(doc(root, `tenantStats/${A}`)));
+    await assertSucceeds(getDocs(collection(root, "tenantStats")));
+    await assertFails(getDoc(doc(staff(A, "owner"), `tenantStats/${A}`)));
+    await assertFails(getDoc(doc(guest("g-stats"), `tenantStats/${A}`)));
+  });
+  it("só gerente grava contagens e só na própria pousada", async () => {
+    await assertFails(setDoc(doc(staff(A, "reception"), `tenantStats/${A}`), stats()));
+    await assertFails(setDoc(doc(staff(A, "owner"), `tenantStats/${B}`), stats()));
+    await assertFails(setDoc(doc(guest("g-s2"), `tenantStats/${A}`), stats()));
+  });
+  it("não aceita dados pessoais nem valores fora do padrão", async () => {
+    const db = staff(A, "owner");
+    await assertFails(setDoc(doc(db, `tenantStats/${A}`), stats({ guestName: "Maria" })));
+    await assertFails(setDoc(doc(db, `tenantStats/${A}`), stats({ revenueCents: 100 })));
+    await assertFails(setDoc(doc(db, `tenantStats/${A}`), stats({ rooms: -1 })));
+    await assertFails(setDoc(doc(db, `tenantStats/${A}`), stats({ rooms: 1.5 })));
+    await assertFails(setDoc(doc(db, `tenantStats/${A}`), stats({ city: "x".repeat(61) })));
+    await assertFails(setDoc(doc(db, `tenantStats/${A}`), stats({ reportedAt: new Date(2020, 1, 1) })));
+  });
+  it("qualquer membro ativo atualiza só a última atividade", async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => { await setDoc(doc(ctx.firestore(), `tenantStats/${A}`), { rooms: 3, members: 1, staysActive: 0, stays30d: 0, staysTotal: 0, reservationsOpen: 0, guests: 0 }); });
+    const r = staff(A, "reception");
+    await assertSucceeds(updateDoc(doc(r, `tenantStats/${A}`), { lastActiveAt: serverTimestamp() }));
+    await assertFails(updateDoc(doc(r, `tenantStats/${A}`), { rooms: 99 }));
+    await assertFails(updateDoc(doc(r, `tenantStats/${A}`), { lastActiveAt: new Date(2020, 1, 1) }));
+    await assertFails(updateDoc(doc(guest("g-s3"), `tenantStats/${A}`), { lastActiveAt: serverTimestamp() }));
+    await assertFails(deleteDoc(doc(staff(A, "owner"), `tenantStats/${A}`)));
   });
 });

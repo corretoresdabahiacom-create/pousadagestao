@@ -165,3 +165,13 @@ O Spark não tem exportação agendada. Em **Relatórios → Backup completo** (
   marcar "não compareceu" (só após a chegada prevista) ou fazer check-in, a reserva sai da agenda. O check-in da reserva só vale
   junto com a criação da hospedagem no mesmo lote.
 - Limitação: as regras não conseguem varrer a agenda para conferir sobreposição; isso é feito pelo aplicativo na transação.
+
+## 15. Venda para outras pousadas e painel do dono (Fase 9)
+
+- **Página pública** em `/` (visitantes); usuário logado é encaminhado ao painel. Cadastro de pousada continua no `/onboarding/`.
+- **Uso agregado sem dados pessoais:** `tenantStats/{tenantId}` guarda só contagens, cidade/UF e `lastActiveAt`. O gerente da pousada grava (no máximo a cada 6 h por aparelho; qualquer membro atualiza só `lastActiveAt` a cada 30 min). As Rules têm lista fechada de campos e só o administrador da plataforma lê. Código em `src/lib/usage.ts`.
+- **Senha do superadmin como exigência do banco:** `isPlatformAdmin()` = está em `platformAdmins` **e** `auth_time` do token tem menos de 30 minutos. O `/master` pede a senha (reautenticação) para abrir e se bloqueia sozinho; sem isso o Firestore recusa a leitura mesmo para o administrador.
+- **Painel `/master`:** visão geral (KPIs, funil de ativação, cadastros por mês, alertas), pousadas (busca, filtros, uso, plano, limite, suspender/cancelar, anotações, CSV), planos, atividade, LGPD. Cálculos puros em `src/lib/platform.ts` (testados).
+- **Coleção `platform`:** IDs com prefixo (`plan-`, `note-`, `log-<timestamp>`), consultados por faixa de ID sem índice composto.
+- **LGPD:** administrador não lê `guests`, `stays`, financeiro, chat etc. (Rules). Anonimização de cadastro de hóspede em Hóspedes. Detalhes e procedimentos em `docs/LGPD.md`; operação comercial em `docs/VENDA.md`.
+- **Sem pagamentos na plataforma:** a cobrança é feita fora do sistema; o status (`trial`, `active`, `suspended`, `cancelled`) é mudado manualmente.

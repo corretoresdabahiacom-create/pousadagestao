@@ -10,6 +10,7 @@ import { BRAND } from "@/config/brand";
 import { useBrandTheme } from "@/lib/branding";
 import { doc, getDoc } from "firebase/firestore";
 import { getFirebase } from "@/lib/firebase/client";
+import { reportUsage } from "@/lib/usage";
 
 export default function PainelLayout({ children }: { children: ReactNode }) {
   const router = useRouter();
@@ -19,6 +20,11 @@ export default function PainelLayout({ children }: { children: ReactNode }) {
   useBrandTheme(membership?.tenantId);
   const [isPlatform, setIsPlatform] = useState(false);
   const uid = user?.uid;
+  const usageTenant = membership?.tenantId;
+  const usageRole = membership?.role;
+  useEffect(() => {
+    if (usageTenant && usageRole) void reportUsage(usageTenant, usageRole);
+  }, [usageTenant, usageRole]);
   useEffect(() => {
     if (!uid) return;
     getDoc(doc(getFirebase().db, `platformAdmins/${uid}`)).then((d) => setIsPlatform(d.exists()), () => setIsPlatform(false));

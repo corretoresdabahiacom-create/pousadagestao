@@ -15,6 +15,8 @@ export default function PrivacyPage() {
         <li><strong>Equipe:</strong> nome, e-mail e função de acesso.</li>
         <li><strong>Hóspede no portal (QR Code):</strong> não há cadastro; é criado um identificador anônimo no aparelho e guardado o código do QR somente em formato irreversível (hash).</li>
       </ul>
+      <h2>O que o fornecedor do sistema enxerga</h2>
+      <p>Para operar e dar suporte, o fornecedor acompanha apenas dados de <strong>cadastro da pousada</strong> (nome, situação e plano contratado) e <strong>números agregados de uso</strong>: quantidade de quartos, de pessoas da equipe, de hospedagens, de reservas e de hóspedes cadastrados, cidade/UF e a data da última atividade. O fornecedor <strong>não acessa</strong> nome, documento, contato, endereço, valores, pagamentos, mensagens ou fotos dos hóspedes: o banco de dados recusa essa leitura, mesmo para o administrador da plataforma.</p>
       <h2>Para que usamos</h2>
       <ul>
         <li>Executar a hospedagem: check-in, conta, cobrança, check-out e comprovante.</li>
@@ -28,6 +30,8 @@ export default function PrivacyPage() {
       <p>Os dados ficam em infraestrutura de nuvem do Google (Firebase) e são acessados apenas pela equipe autorizada da pousada. Não vendemos dados. Podem ser compartilhados com autoridades quando exigido por lei.</p>
       <h2>Por quanto tempo guardamos</h2>
       <p>Pelo tempo necessário para a finalidade e para cumprir prazos legais (por exemplo, registros fiscais e contábeis). Após esse prazo os dados podem ser eliminados ou anonimizados a pedido, ressalvadas as obrigações legais.</p>
+      <h2>Encerramento do contrato e eliminação</h2>
+      <p>Ao encerrar o contrato, a pousada pode exportar todos os seus dados (backup completo). A eliminação definitiva dos dados da pousada é feita a pedido do proprietário, em até 30 dias, ressalvadas as obrigações legais de guarda. A pousada também pode anonimizar o cadastro de um hóspede que exercer o direito de eliminação.</p>
       <h2>Seus direitos</h2>
       <p>O titular pode solicitar à pousada: confirmação do tratamento, acesso, correção, anonimização, portabilidade, eliminação (quando cabível), informação sobre compartilhamento e revogação de consentimento. Peça diretamente na recepção da pousada ou pelo contato do encarregado (DPO) informado pela pousada.</p>
       <h2>Segurança</h2>

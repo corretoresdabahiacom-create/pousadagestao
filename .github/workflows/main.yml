@@ -1,1 +1,52 @@
+name: Testes
 
+# Roda a cada envio para a main (e em pull requests): lint, testes de lógica e
+# testes das regras do Firestore no emulador (Java 21). Não usa segredos nem acessa
+# o projeto real do Firebase. O site continua sendo publicado pela Cloudflare.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  testes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Cache do emulador do Firestore
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/firebase/emulators
+          key: firebase-emulators-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Instalar dependências
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm exec eslint src tests
+
+      - name: Testes de lógica
+        run: pnpm exec vitest run tests/unit --reporter=default --reporter=github-actions
+
+      - name: Testes das regras do Firestore
+        run: >-
+          pnpm exec firebase emulators:exec --only firestore --project pousadagestao-rules-test
+          "pnpm exec vitest run tests/rules --reporter=default --reporter=github-actions"

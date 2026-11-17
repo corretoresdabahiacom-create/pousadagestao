@@ -17,16 +17,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: pnpm/action-setup@v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
@@ -44,9 +44,14 @@ jobs:
         run: pnpm exec eslint src tests
 
       - name: Testes de lógica
-        run: pnpm exec vitest run tests/unit --reporter=default --reporter=github-actions
+        run: pnpm exec vitest run tests/unit --reporter=default --reporter=github-actions --reporter=json --outputFile.json=unit-results.json
 
       - name: Testes das regras do Firestore
         run: >-
           pnpm exec firebase emulators:exec --only firestore --project pousadagestao-rules-test
-          "pnpm exec vitest run tests/rules --reporter=default --reporter=github-actions"
+          "pnpm exec vitest run tests/rules --reporter=default --reporter=github-actions --reporter=json --outputFile.json=rules-results.json"
+
+      # Publica a contagem como aviso na página da execução (aba "Annotations").
+      - name: Resumo dos testes
+        if: always()
+        run: node .github/scripts/resumo-testes.mjs

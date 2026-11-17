@@ -8,6 +8,8 @@ import { type RoomStatus } from "@/lib/types";
 import { useActiveStays } from "@/lib/useStays";
 import { dreCompetencia, useCashEntries, usePayables, useReceivables, useRevenues } from "@/lib/finance";
 import { useNow } from "@/lib/useNow";
+import { usePublicInfo } from "@/lib/usePublicInfo";
+import { checkoutMessage, waLink } from "@/lib/whatsapp";
 import { DAY_MS, fmtDateTime, startOfDay } from "@/lib/format";
 import { formatCents } from "@/lib/money";
 import { Alert, Card, EmptyState, Spinner } from "@/components/ui";
@@ -29,6 +31,8 @@ export default function DashboardPage() {
   const monthStart = useMemo(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); }, []);
   const monthEnd = useMemo(() => new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 1), [monthStart]);
   const revs = useRevenues(isFin ? t : undefined, monthStart);
+  const pub = usePublicInfo(hasStays ? t : undefined);
+  const canWarn = ["owner", "admin", "reception"].includes(role);
 
   if (error) return <Alert>{error}</Alert>;
   if (!rooms) return <Spinner />;
@@ -85,14 +89,21 @@ export default function DashboardPage() {
       {hasStays && act.stays && (
         <Card>
           <h2 className="mb-2 text-base font-semibold">Hospedagens ativas ({act.stays.length})</h2>
+          {canWarn && act.stays.length > 0 && <p className="mb-1 text-xs text-slate-500">Saídas mais próximas primeiro. Para quem sai em até 24 h, o botão abre o WhatsApp com o aviso pronto (você confere e envia).</p>}
           {act.stays.length === 0 ? <p className="text-sm text-slate-500">Nenhum hóspede na casa agora.</p> : (
             <ul className="divide-y divide-slate-100 text-sm">
               {act.stays.slice(0, 8).map((s) => {
                 const left = s.plannedCheckOutAt.getTime() - now;
+                const wa = canWarn && left < DAY_MS
+                  ? waLink(s.guestPhone, checkoutMessage({ guestName: s.guestName, roomNumber: s.roomNumber, checkOutAt: s.plannedCheckOutAt, pousada: pub.displayName || tenant?.displayName || tenant?.name, text: pub.checkoutReminderText }))
+                  : null;
                 return (
-                  <li key={s.id} className="flex flex-wrap justify-between gap-2 py-2">
+                  <li key={s.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
                     <Link href={`/painel/hospedagem/?id=${s.id}`} className="font-medium text-brand-700 hover:underline">Quarto {s.roomNumber} · {s.guestName}</Link>
-                    <span className={left < 0 ? "font-medium text-red-700" : left < 2 * 3600000 ? "font-medium text-amber-700" : "text-slate-600"}>{left < 0 ? "Passou do horário · " : "Saída prevista · "}{fmtDateTime(s.plannedCheckOutAt)}</span>
+                    <span className="flex flex-wrap items-center gap-2">
+                      <span className={left < 0 ? "font-medium text-red-700" : left < 2 * 3600000 ? "font-medium text-amber-700" : "text-slate-600"}>{left < 0 ? "Passou do horário · " : "Saída prevista · "}{fmtDateTime(s.plannedCheckOutAt)}</span>
+                      {wa && <a href={wa} target="_blank" rel="noopener noreferrer" className="rounded-md bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20 hover:bg-emerald-100">Avisar no WhatsApp</a>}
+                    </span>
                   </li>
                 );
               })}

@@ -19,6 +19,8 @@ Com `NEXT_PUBLIC_USE_EMULATORS=false` o app usa o projeto Firebase real.
 
 ## Testes das regras de segurança
 
+A cada envio para a `main`, o GitHub roda sozinho o lint, os testes de lógica e os testes das regras no emulador (aba **Actions** do repositório, workflow "Testes"). A contagem aparece em **Annotations** na página da execução. Para rodar no seu computador (exige Java 21):
+
 ```bash
 npm run test:rules
 ```
@@ -75,4 +77,4 @@ use no console do Firebase a exportação do Firestore (exige Blaze) ou migre pa
 - DRE, totais e indicadores são calculados no navegador a partir dos lançamentos do período.
 - O limite de quartos por plano é aplicado pelo painel (controle comercial), não é barreira de segurança.
 - O campo "Observações da hospedagem" é legível pelo hóspede no portal.
-- As regras e os testes de regras novos devem ser executados no seu computador (`npm run test:rules`, exige Java).
+- Os testes de regras rodam automaticamente no GitHub Actions; publicar as regras no Firebase continua manual (`npx firebase deploy --only firestore:rules`).

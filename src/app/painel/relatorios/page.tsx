@@ -7,15 +7,17 @@ import { friendlyError, useAuth } from "@/lib/auth/AuthProvider";
 import { buildBackup } from "@/lib/backup";
 import { dreCaixa, dreCompetencia, loadAllCash, parsePayable, parseReceivable, parseRevenue, type Dre } from "@/lib/finance";
 import { parseStay } from "@/lib/stays";
+import { occupancyReport } from "@/lib/occupancy";
 import { payLabel } from "@/lib/stays";
 import { download, downloadCsv, downloadXlsx, type Table } from "@/lib/exporters";
 import { fmtDate, fmtDateTime } from "@/lib/format";
 import { formatCents } from "@/lib/money";
 import { Alert, Button, Card, Field, Input, Select } from "@/components/ui";
 
-type Kind = "hospedagens" | "caixa" | "pagar" | "receber" | "dre_comp" | "dre_caixa";
+type Kind = "hospedagens" | "ocupacao" | "caixa" | "pagar" | "receber" | "dre_comp" | "dre_caixa";
 const KINDS: { id: Kind; label: string; finance: boolean }[] = [
   { id: "hospedagens", label: "Hospedagens encerradas", finance: false },
+  { id: "ocupacao", label: "Ocupação (taxa, diária média, RevPAR)", finance: false },
   { id: "caixa", label: "Movimento de caixa", finance: true },
   { id: "pagar", label: "Contas a pagar (por vencimento)", finance: true },
   { id: "receber", label: "Contas a receber (por vencimento)", finance: true },
@@ -72,6 +74,32 @@ export default function ReportsPage() {
         const stays = s.docs.map((d) => parseStay(d.id, d.data())).sort((x, y) => (x.checkedOutAt?.getTime() ?? 0) - (y.checkedOutAt?.getTime() ?? 0));
         setTable({ title: "Hospedagens encerradas", headers: ["Hóspede", "Quarto", "Entrada", "Saída", "Diárias", "Total (R$)", "Pago (R$)", "Pendente (R$)"], moneyCols: [5, 6, 7],
           rows: stays.map((x) => [x.guestName, x.roomNumber, x.checkInAt, x.checkedOutAt, x.nights, x.closing?.totalCents ?? 0, x.closing?.paidCents ?? 0, x.closing?.pendingCents ?? 0]) });
+      } else if (kind === "ocupacao") {
+        // Ativas (todas) + encerradas que saíram a partir do início do período; filtra as que entraram antes do fim.
+        const [act, closed, rooms] = await Promise.all([
+          getDocs(query(col("stays"), where("status", "==", "active"))),
+          getDocs(query(col("stays"), where("checkedOutAt", ">=", A))),
+          getDocs(col("rooms")),
+        ]);
+        const seen = new Map<string, ReturnType<typeof parseStay>>();
+        for (const d of [...act.docs, ...closed.docs]) seen.set(d.id, parseStay(d.id, d.data()));
+        const stays = [...seen.values()].filter((x) => x.checkInAt < b);
+        const nRooms = rooms.docs.filter((d) => d.data().archived !== true).length;
+        const r = occupancyReport(stays, nRooms, a, b, new Date());
+        const num = (x: number) => x.toLocaleString("pt-BR", { maximumFractionDigits: 1 });
+        const pct = (x: number) => `${(x * 100).toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%`;
+        setWarn([
+          `Capacidade: ${nRooms} quarto(s) cadastrado(s) (não arquivados) × dias do período. Quartos em manutenção contam como disponíveis.`,
+          "Pousada 24 h: cada hospedagem conta pelas horas ocupadas em cada dia. Dias futuros usam a saída prevista das hospedagens ativas.",
+          "Receita de diárias já com desconto, sem taxas e sem consumo, distribuída pelas horas de ocupação.",
+        ]);
+        setTable({ title: "Ocupação", headers: ["Dia", "Quartos ocupados (média)", "Ocupação", "Receita de diárias (R$)"], moneyCols: [3],
+          rows: [
+            ...r.days.map((x) => [fmtDate(x.day), num(x.roomNights), pct(x.occupancy), x.revenueCents]),
+            ["TOTAL (quarto-diárias vendidas)", num(r.roomNights), pct(r.occupancy), r.revenueCents],
+            ["Diária média (ADR)", "", "", r.adrCents],
+            ["RevPAR (receita por quarto disponível/dia)", "", "", r.revparCents],
+          ] });
       } else if (kind === "caixa") {
         const c = (await loadAllCash(t!, a, b));
         setTable({ title: "Movimento de caixa", headers: ["Data", "Tipo", "Descrição", "Categoria", "Forma", "Valor (R$)", "Transferência"], moneyCols: [5],

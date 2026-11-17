@@ -28,6 +28,8 @@ import {
 import { fmtDateTime, fromLocalInput, newId, toLocalInput } from "@/lib/format";
 import { formatCents, parseBRLToCents } from "@/lib/money";
 import { useNow } from "@/lib/useNow";
+import { usePublicInfo } from "@/lib/usePublicInfo";
+import { checkoutMessage, waLink } from "@/lib/whatsapp";
 import { ChatPanel } from "@/components/ChatPanel";
 import { QrModal } from "@/components/QrModal";
 import { Alert, Badge, Button, Card, Field, Input, Modal, Select, Spinner } from "@/components/ui";
@@ -42,7 +44,7 @@ export default function StayPage() {
 
 function StayDetail() {
   const id = useSearchParams().get("id");
-  const { user, membership } = useAuth();
+  const { user, membership, tenant } = useAuth();
   const tenantId = membership?.tenantId;
   const role = membership?.role;
   const canAct = role === "owner" || role === "admin" || role === "reception";
@@ -56,6 +58,7 @@ function StayDetail() {
   const [err, setErr] = useState("");
   const [confirm, setConfirm] = useState<"" | "revoke" | "reissue">("");
   const now = useNow();
+  const pub = usePublicInfo(allowed ? tenantId : undefined);
 
   const hash = stay?.accessHash;
   useEffect(() => {
@@ -73,6 +76,10 @@ function StayDetail() {
   const acc = computeAccount(stay, charges, payments);
   const active = stay.status === "active";
   const reminders = reminderTimes(stay.plannedCheckOutAt);
+  const wa = canAct && active
+    ? waLink(stay.guestPhone, checkoutMessage({ guestName: stay.guestName, roomNumber: stay.roomNumber, checkOutAt: stay.plannedCheckOutAt, pousada: pub.displayName || tenant?.displayName || tenant?.name, text: pub.checkoutReminderText }))
+    : null;
+  const linkBtn = "inline-flex rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-700 ring-1 ring-inset ring-slate-300 hover:bg-slate-50";
 
   async function run(fn: () => Promise<void>, ok: string) {
     setErr("");
@@ -98,17 +105,17 @@ function StayDetail() {
             {stay.guestPhone}
           </p>
         </div>
-        {canAct && active && (
-          <div className="flex flex-wrap gap-2">
-            <Button variant="secondary" onClick={() => setModal("extend")}>Prorrogar</Button>
-            <Button onClick={() => setModal("checkout")}>Fazer checkout</Button>
-          </div>
-        )}
-        {!active && (
-          <Link href={`/painel/comprovante/?id=${stay.id}`} className="inline-flex rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-700 ring-1 ring-inset ring-slate-300 hover:bg-slate-50">
-            Comprovante (PDF)
-          </Link>
-        )}
+        <div className="flex flex-wrap gap-2">
+          {canAct && <Link href={`/painel/ficha/?id=${stay.id}`} className={linkBtn}>Ficha do hóspede</Link>}
+          {wa && <a href={wa} target="_blank" rel="noopener noreferrer" className={linkBtn}>Avisar saída no WhatsApp</a>}
+          {canAct && active && (
+            <>
+              <Button variant="secondary" onClick={() => setModal("extend")}>Prorrogar</Button>
+              <Button onClick={() => setModal("checkout")}>Fazer checkout</Button>
+            </>
+          )}
+          {!active && <Link href={`/painel/comprovante/?id=${stay.id}`} className={linkBtn}>Comprovante (PDF)</Link>}
+        </div>
       </div>
 
       {notice && <Alert kind="success">{notice}</Alert>}

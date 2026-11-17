@@ -1,13 +1,16 @@
 "use client";
 
-import { Suspense, useMemo, useState, type FormEvent } from "react";
+import { Suspense, useEffect, useMemo, useState, type FormEvent } from "react";
+import { doc, getDoc } from "firebase/firestore";
+import { getFirebase } from "@/lib/firebase/client";
+import { parseReservation, type Reservation } from "@/lib/reservations";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { friendlyError, useAuth } from "@/lib/auth/AuthProvider";
 import { useRooms } from "@/lib/useRooms";
 import { emptyGuest, matchGuest, useGuests } from "@/lib/useGuests";
 import { PAY_METHODS, StayError, computePlanned, createStay, type GuestData, type PayMethod } from "@/lib/stays";
-import { addNights, countNights, fromLocalInput, toLocalInput } from "@/lib/format";
+import { addNights, countNights, fmtDateTime, fromLocalInput, toLocalInput } from "@/lib/format";
 import { centsToInput, formatCents, parseBRLToCents } from "@/lib/money";
 import { GuestFields } from "@/components/GuestFields";
 import { QrModal } from "@/components/QrModal";
@@ -22,12 +25,41 @@ interface CompForm {
 export default function CheckinPage() {
   return (
     <Suspense fallback={<Spinner />}>
-      <CheckinForm />
+      <CheckinLoader />
     </Suspense>
   );
 }
 
-function CheckinForm() {
+/** Se a URL traz ?reserva=ID, carrega a reserva e preenche o check-in com os dados dela. */
+function CheckinLoader() {
+  const resId = useSearchParams().get("reserva");
+  const { membership } = useAuth();
+  const tenantId = membership?.tenantId;
+  const [res, setRes] = useState<Reservation | null | undefined>(undefined);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    if (!resId || !tenantId) return;
+    const { db } = getFirebase();
+    getDoc(doc(db, `tenants/${tenantId}/reservations/${resId}`))
+      .then((s) => setRes(s.exists() ? parseReservation(s.id, s.data()) : null))
+      .catch((e) => setErr(friendlyError(e)));
+  }, [resId, tenantId]);
+  if (!resId) return <CheckinForm />;
+  if (err) return <Alert>{err}</Alert>;
+  if (res === undefined) return <Spinner />;
+  if (res === null) return <Alert>Reserva não encontrada.</Alert>;
+  if (res.status !== "confirmed") {
+    return (
+      <div className="mx-auto max-w-3xl space-y-3">
+        <Alert>Esta reserva não está mais confirmada (situação atual: {res.status === "checked_in" ? "check-in já feito" : res.status === "cancelled" ? "cancelada" : "não compareceu"}).</Alert>
+        <Link href="/painel/reservas/" className="text-sm font-medium text-brand-700 hover:underline">← Voltar às reservas</Link>
+      </div>
+    );
+  }
+  return <CheckinForm key={res.id} reservation={res} />;
+}
+
+function CheckinForm({ reservation }: { reservation?: Reservation }) {
   const router = useRouter();
   const params = useSearchParams();
   const { user, membership } = useAuth();
@@ -37,18 +69,20 @@ function CheckinForm() {
   const { guests } = useGuests(allowed ? tenantId : undefined);
 
   const [now] = useState(() => new Date());
-  const [guestId, setGuestId] = useState<string | null>(params.get("guest"));
-  const [search, setSearch] = useState("");
-  const [guest, setGuest] = useState<GuestData>(emptyGuest);
+  const [guestId, setGuestId] = useState<string | null>(reservation?.guestId ?? params.get("guest"));
+  const [search, setSearch] = useState(reservation?.guestName ?? "");
+  const [guest, setGuest] = useState<GuestData>(
+    reservation ? { ...emptyGuest, fullName: reservation.guestName, whatsapp: reservation.guestPhone, email: reservation.guestEmail } : emptyGuest,
+  );
   const [companions, setCompanions] = useState<CompForm[]>([]);
-  const [roomId, setRoomId] = useState(params.get("room") ?? "");
-  const [rateText, setRateText] = useState("");
+  const [roomId, setRoomId] = useState(reservation?.roomId ?? params.get("room") ?? "");
+  const [rateText, setRateText] = useState(reservation ? centsToInput(reservation.dailyRateCents) : "");
   const [checkIn, setCheckIn] = useState(toLocalInput(now));
-  const [nights, setNights] = useState(1);
-  const [checkOut, setCheckOut] = useState(toLocalInput(addNights(now, 1)));
-  const [discountText, setDiscountText] = useState("");
-  const [feesText, setFeesText] = useState("");
-  const [notes, setNotes] = useState("");
+  const [nights, setNights] = useState(reservation?.nights ?? 1);
+  const [checkOut, setCheckOut] = useState(toLocalInput(addNights(now, reservation?.nights ?? 1)));
+  const [discountText, setDiscountText] = useState(reservation?.discountCents ? centsToInput(reservation.discountCents) : "");
+  const [feesText, setFeesText] = useState(reservation?.feesCents ? centsToInput(reservation.feesCents) : "");
+  const [notes, setNotes] = useState(reservation?.notes ?? "");
   const [payText, setPayText] = useState("");
   const [method, setMethod] = useState<PayMethod>("pix");
   const [busy, setBusy] = useState(false);
@@ -116,6 +150,7 @@ function CheckinForm() {
         discountCents: discountCents!,
         feesCents: feesCents!,
         notes,
+        reservationId: reservation?.id,
         payment: payCents ? { amountCents: payCents, method } : undefined,
       });
       setResult({ token: r.token, stayId: r.stayId, room: room.number });
@@ -132,6 +167,14 @@ function CheckinForm() {
         <h1 className="text-2xl font-bold">Check-in</h1>
         <p className="text-sm text-slate-600">Pousada 24 horas: a diária conta 24 horas a partir da entrada, em qualquer horário.</p>
       </div>
+
+      {reservation && (
+        <Alert kind="info">
+          Check-in da reserva de <strong>{reservation.guestName}</strong> (quarto {reservation.roomNumber}, chegada prevista {fmtDateTime(reservation.checkInAt)}, {reservation.nights} diária{reservation.nights === 1 ? "" : "s"}).
+          A entrada é agora e a saída é recalculada a partir dela; confira antes de confirmar.
+          {!available.some((r) => r.id === reservation.roomId) && " O quarto reservado não está disponível agora (ocupado, em limpeza ou bloqueado): escolha outro quarto livre."}
+        </Alert>
+      )}
 
       {available.length === 0 && (
         <EmptyState

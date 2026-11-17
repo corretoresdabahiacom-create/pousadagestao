@@ -5,6 +5,7 @@ import {
   type DocumentReference,
   type Transaction,
   collection,
+  deleteField,
   doc,
   getDoc,
   getDocs,
@@ -15,6 +16,7 @@ import {
 import { getFirebase } from "@/lib/firebase/client";
 import { DAY_MS, addNights, countNights, toDate } from "@/lib/format";
 import { generateToken, sha256Hex } from "@/lib/tokens";
+import { conflictMessage, findConflicts, parseSchedule } from "@/lib/schedule";
 
 // ---------------------------------------------------------------------------
 // Tipos e constantes
@@ -274,6 +276,8 @@ export interface NewStayInput {
   discountCents: number;
   feesCents: number;
   notes: string;
+  /** Quando o check-in vem de uma reserva: ela vira "check-in feito" e sai da agenda do quarto, no mesmo lote. */
+  reservationId?: string;
   payment?: { amountCents: number; method: PayMethod };
 }
 
@@ -290,6 +294,21 @@ export function guestDoc(g: GuestData) {
     notes: g.notes.trim(),
     updatedAt: serverTimestamp(),
   };
+}
+
+/**
+ * A agenda de reservas pode ser lida? (Com regras antigas no Firebase, ainda sem reservas, a leitura é negada:
+ * nesse caso o check-in e a prorrogação seguem sem a checagem de reservas, como antes.)
+ */
+async function schedulesReadable(t: string, roomId: string): Promise<boolean> {
+  const { db } = getFirebase();
+  try {
+    await getDoc(doc(db, `tenants/${t}/roomSchedules/${roomId}`));
+    return true;
+  } catch (e) {
+    if ((e as { code?: string })?.code === "permission-denied") return false;
+    throw e;
+  }
 }
 
 /**
@@ -321,11 +340,28 @@ export async function createStay(i: NewStayInput): Promise<{ stayId: string; tok
   const guestRef = i.guestId ? doc(db, `tenants/${t}/guests/${i.guestId}`) : doc(collection(db, `tenants/${t}/guests`));
   const roomRef = doc(db, `tenants/${t}/rooms/${i.roomId}`);
 
+  const resRef = i.reservationId ? doc(db, `tenants/${t}/reservations/${i.reservationId}`) : null;
+  const useSchedule = resRef ? true : await schedulesReadable(t, i.roomId);
+
   await runTransaction(db, async (tx) => {
-    const room = await tx.get(roomRef);
+    const [room, sched, res] = await Promise.all([
+      tx.get(roomRef),
+      useSchedule ? tx.get(doc(db, `tenants/${t}/roomSchedules/${i.roomId}`)) : Promise.resolve(null),
+      resRef ? tx.get(resRef) : Promise.resolve(null),
+    ]);
     const r = room.data();
     if (!room.exists() || r?.archived === true || r?.status !== "available") {
       throw new StayError("Este quarto não está disponível para novo check-in.");
+    }
+    if (res && (!res.exists() || res.data().status !== "confirmed")) {
+      throw new StayError("A reserva não está mais confirmada (pode ter sido cancelada ou já ter virado check-in).");
+    }
+    // Não deixa o check-in invadir uma reserva futura do mesmo quarto.
+    const clash = findConflicts(parseSchedule(sched?.data()), i.checkInAt, i.plannedCheckOutAt, { ignore: i.reservationId });
+    if (clash.length) throw new StayError(conflictMessage(clash, (d) => d.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })));
+    if (res && resRef) {
+      tx.update(resRef, { status: "checked_in", stayId, updatedAt: serverTimestamp() });
+      tx.set(doc(db, `tenants/${t}/roomSchedules/${String(res.data().roomId)}`), { items: { [res.id]: deleteField() }, updatedAt: serverTimestamp() }, { merge: true });
     }
 
     tx.set(guestRef, i.guestId ? guestDoc(i.guest) : { ...guestDoc(i.guest), createdBy: uid, createdAt: serverTimestamp() }, { merge: true });
@@ -381,7 +417,7 @@ export async function createStay(i: NewStayInput): Promise<{ stayId: string; tok
       }
     }
 
-    tx.set(newAuditRef(t), auditData(uid, "stay.checkin", { stayId, roomId: i.roomId }));
+    tx.set(newAuditRef(t), auditData(uid, "stay.checkin", { stayId, roomId: i.roomId, reservationId: i.reservationId ?? null }));
   });
 
   return { stayId, token };
@@ -466,24 +502,34 @@ export async function extendStay(t: string, user: User, stay: Stay, newCheckOut:
   if (newCheckOut <= stay.checkInAt) throw new StayError("A saída deve ser depois da entrada.");
   const nights = countNights(stay.checkInAt, newCheckOut);
   const { lodging, total } = computePlanned(stay.dailyRateCents, nights, stay.discountCents, stay.feesCents);
-  const b = writeBatch(db);
-  b.update(doc(db, `tenants/${t}/stays/${stay.id}`), {
-    plannedCheckOutAt: Timestamp.fromDate(newCheckOut),
-    nights,
-    lodgingCents: lodging,
-    totalPlannedCents: total,
-    updatedAt: serverTimestamp(),
-  });
-  b.set(
-    newAuditRef(t),
-    auditData(user.uid, "stay.extend", {
-      stayId: stay.id,
-      from: stay.plannedCheckOutAt.toISOString(),
-      to: newCheckOut.toISOString(),
+  const stayRef = doc(db, `tenants/${t}/stays/${stay.id}`);
+  const useSchedule = await schedulesReadable(t, stay.roomId);
+  await runTransaction(db, async (tx) => {
+    const [cur, sched] = await Promise.all([
+      tx.get(stayRef),
+      useSchedule ? tx.get(doc(db, `tenants/${t}/roomSchedules/${stay.roomId}`)) : Promise.resolve(null),
+    ]);
+    if (!cur.exists() || cur.data().status !== "active") throw new StayError("Esta hospedagem já foi encerrada.");
+    // A prorrogação não pode avançar sobre uma reserva futura do mesmo quarto.
+    const clash = findConflicts(parseSchedule(sched?.data()), stay.checkInAt, newCheckOut);
+    if (clash.length) throw new StayError(conflictMessage(clash, (d) => d.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })) + " Troque o hóspede de quarto ou altere a reserva.");
+    tx.update(stayRef, {
+      plannedCheckOutAt: Timestamp.fromDate(newCheckOut),
       nights,
-    }),
-  );
-  await b.commit();
+      lodgingCents: lodging,
+      totalPlannedCents: total,
+      updatedAt: serverTimestamp(),
+    });
+    tx.set(
+      newAuditRef(t),
+      auditData(user.uid, "stay.extend", {
+        stayId: stay.id,
+        from: stay.plannedCheckOutAt.toISOString(),
+        to: newCheckOut.toISOString(),
+        nights,
+      }),
+    );
+  });
 }
 
 /** Revogação manual do QR Code. A hospedagem continua ativa, mas o portal deixa de abrir. */

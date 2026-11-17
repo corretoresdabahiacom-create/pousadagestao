@@ -1,4 +1,5 @@
 import { fmtDateTime } from "@/lib/format";
+import { formatCents } from "@/lib/money";
 
 /**
  * Converte um telefone digitado em número no formato do WhatsApp (só dígitos, com DDI).
@@ -34,4 +35,23 @@ export function checkoutMessage(o: { guestName: string; roomNumber: string; chec
   const body = (o.text || DEFAULT_CHECKOUT_TEXT).trim();
   const when = `Saída prevista: ${fmtDateTime(o.checkOutAt)} (quarto ${o.roomNumber}).`;
   return [hello, body, when, o.pousada ? `— ${o.pousada}` : ""].filter(Boolean).join("\n");
+}
+
+/** Mensagem de confirmação de reserva com quarto, datas, diárias e valor previsto. */
+export function reservationMessage(o: {
+  guestName: string;
+  roomNumber: string;
+  checkInAt: Date;
+  plannedCheckOutAt: Date;
+  nights: number;
+  totalCents: number;
+  pousada?: string;
+}): string {
+  const first = o.guestName.trim().split(/\s+/)[0] || "";
+  return [
+    first ? `Olá, ${first}! Sua reserva está confirmada.` : "Olá! Sua reserva está confirmada.",
+    `Quarto ${o.roomNumber} · chegada ${fmtDateTime(o.checkInAt)} · saída prevista ${fmtDateTime(o.plannedCheckOutAt)} (${o.nights} diária${o.nights === 1 ? "" : "s"}).`,
+    `Valor previsto: ${formatCents(o.totalCents)}.`,
+    o.pousada ? `— ${o.pousada}` : "",
+  ].filter(Boolean).join("\n");
 }

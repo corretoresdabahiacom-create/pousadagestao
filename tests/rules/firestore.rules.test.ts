@@ -7,7 +7,7 @@ import {
   initializeTestEnvironment,
   type RulesTestEnvironment,
 } from "@firebase/rules-unit-testing";
-import { Timestamp, deleteDoc, doc, getDoc, getDocs, collection, serverTimestamp, setDoc, updateDoc, writeBatch } from "firebase/firestore";
+import { Timestamp, deleteDoc, deleteField, doc, getDoc, getDocs, collection, serverTimestamp, setDoc, updateDoc, writeBatch } from "firebase/firestore";
 
 let env: RulesTestEnvironment;
 
@@ -794,5 +794,141 @@ describe("fase 6 — equipe", () => {
     await assertFails(updateDoc(doc(owner, `tenants/${A}/members/${A}-reception`), { name: "x" }));
     await assertSucceeds(updateDoc(doc(owner, `tenants/${A}/members/${A}-reception`), { active: false }));
     await assertFails(updateDoc(doc(owner, `tenants/${A}/members/${A}-owner`), { active: false }));
+  });
+});
+
+describe("fase 8 — reservas futuras", () => {
+  const DAY = 86400000;
+  const base = Math.floor(Date.now() / 3600000) * 3600000;
+  const at = (days: number) => Timestamp.fromMillis(base + days * DAY);
+  const REC = `${A}-reception`;
+  const resData = (over: Record<string, unknown> = {}) => ({
+    status: "confirmed", roomId: "r1", roomNumber: "1", guestName: "Ana", guestPhone: "71999998888", guestEmail: "", guestId: null,
+    adults: 2, children: 0, checkInAt: at(10), plannedCheckOutAt: at(12), nights: 2, dailyRateCents: 20000, lodgingCents: 40000,
+    discountCents: 0, feesCents: 0, totalPlannedCents: 40000, source: "whatsapp", notes: "", createdBy: REC, ...over,
+  });
+  type Sched = { start?: Timestamp; end?: Timestamp; room?: string; skip?: boolean };
+  const reserve = (db: ReturnType<typeof staff>, id: string, over: Record<string, unknown> = {}, sc: Sched = {}) => {
+    const d = resData(over);
+    const b = writeBatch(db);
+    b.set(doc(db, `tenants/${A}/reservations/${id}`), { ...d, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+    if (!sc.skip) {
+      b.set(doc(db, `tenants/${A}/roomSchedules/${sc.room ?? d.roomId}`), { items: { [id]: { start: sc.start ?? d.checkInAt, end: sc.end ?? d.plannedCheckOutAt, guestName: "Ana" } }, updatedAt: serverTimestamp() }, { merge: true });
+    }
+    return b.commit();
+  };
+  const seed = async (id: string, over: Record<string, unknown> = {}) => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      const db = ctx.firestore();
+      const d = resData(over);
+      await setDoc(doc(db, `tenants/${A}/reservations/${id}`), d);
+      await setDoc(doc(db, `tenants/${A}/roomSchedules/${d.roomId}`), { items: { [id]: { start: d.checkInAt, end: d.plannedCheckOutAt, guestName: "Ana" } } }, { merge: true });
+    });
+  };
+  const leave = (db: ReturnType<typeof staff>, id: string, status: string, opts: { keepSchedule?: boolean; reason?: string | null } = {}) => {
+    const b = writeBatch(db);
+    const upd: Record<string, unknown> = { status, cancelledBy: REC, cancelledAt: serverTimestamp(), updatedAt: serverTimestamp() };
+    if (opts.reason !== null) upd.cancelReason = opts.reason ?? "Desistiu";
+    b.update(doc(db, `tenants/${A}/reservations/${id}`), upd);
+    if (!opts.keepSchedule) b.set(doc(db, `tenants/${A}/roomSchedules/r1`), { items: { [id]: deleteField() } }, { merge: true });
+    return b.commit();
+  };
+
+  it("recepção cria reserva registrada na agenda do quarto", async () => {
+    await assertSucceeds(reserve(staff(A, "reception"), "rv1"));
+    await assertSucceeds(getDoc(doc(staff(A, "finance"), `tenants/${A}/reservations/rv1`)));
+    await assertSucceeds(getDoc(doc(staff(A, "finance"), `tenants/${A}/roomSchedules/r1`)));
+  });
+
+  it("reserva sem agenda, ou com datas diferentes na agenda, é negada", async () => {
+    const db = staff(A, "reception");
+    await assertFails(reserve(db, "rv2", {}, { skip: true }));
+    await assertFails(reserve(db, "rv3", {}, { end: at(13) }));
+    await assertFails(reserve(db, "rv4", {}, { room: "r3" }));
+  });
+
+  it("valores, pessoas, origem e campos são validados", async () => {
+    const db = staff(A, "reception");
+    await assertFails(reserve(db, "v1", { totalPlannedCents: 1 }));
+    await assertFails(reserve(db, "v2", { nights: 1, lodgingCents: 20000, totalPlannedCents: 20000 })); // 2 dias marcados como 1 diária
+    await assertFails(reserve(db, "v3", { adults: 0 }));
+    await assertFails(reserve(db, "v4", { source: "site-pirata" }));
+    await assertFails(reserve(db, "v5", { extra: "x" }));
+    await assertFails(reserve(db, "v6", { status: "checked_in" }));
+    await assertFails(reserve(db, "v7", { createdBy: "outro" }));
+    await assertFails(reserve(db, "v8", { roomId: "nao-existe" }));
+  });
+
+  it("financeiro e funcionário não criam; funcionário e hóspede não leem", async () => {
+    await assertFails(reserve(staff(A, "finance"), "f1", { createdBy: `${A}-finance` }));
+    await assertFails(reserve(staff(A, "staff"), "f2", { createdBy: `${A}-staff` }));
+    await seed("rv5");
+    await assertFails(getDoc(doc(staff(A, "staff"), `tenants/${A}/reservations/rv5`)));
+    await assertFails(getDoc(doc(guest("g-r"), `tenants/${A}/reservations/rv5`)));
+    await assertFails(getDoc(doc(staff(A, "staff"), `tenants/${A}/roomSchedules/r1`)));
+    await assertFails(setDoc(doc(staff(A, "staff"), `tenants/${A}/roomSchedules/r1`), { items: {} }));
+  });
+
+  it("cancelar exige motivo e liberar a agenda", async () => {
+    await seed("c1");
+    const db = staff(A, "reception");
+    await assertFails(leave(db, "c1", "cancelled", { keepSchedule: true }));
+    await assertFails(leave(db, "c1", "cancelled", { reason: null }));
+    await assertFails(leave(staff(A, "finance"), "c1", "cancelled"));
+    await assertSucceeds(leave(db, "c1", "cancelled"));
+    await assertFails(updateDoc(doc(db, `tenants/${A}/reservations/c1`), { status: "confirmed" }));
+  });
+
+  it("não compareceu só depois da chegada prevista", async () => {
+    await seed("n1");
+    await seed("n2", { checkInAt: at(-2), plannedCheckOutAt: at(1), nights: 3, lodgingCents: 60000, totalPlannedCents: 60000 });
+    const db = staff(A, "reception");
+    await assertFails(leave(db, "n1", "no_show"));
+    await assertSucceeds(leave(db, "n2", "no_show"));
+  });
+
+  it("alterar datas exige atualizar a agenda; trocar de quarto exige sair da agenda antiga", async () => {
+    await seed("e1");
+    const db = staff(A, "reception");
+    const change = { checkInAt: at(11), plannedCheckOutAt: at(14), nights: 3, lodgingCents: 60000, totalPlannedCents: 60000, updatedAt: serverTimestamp() };
+    await assertFails(updateDoc(doc(db, `tenants/${A}/reservations/e1`), change));
+    let b = writeBatch(db);
+    b.update(doc(db, `tenants/${A}/reservations/e1`), change);
+    b.set(doc(db, `tenants/${A}/roomSchedules/r1`), { items: { e1: { start: at(11), end: at(14), guestName: "Ana" } } }, { merge: true });
+    await assertSucceeds(b.commit());
+
+    // troca para o quarto 3 sem tirar da agenda do quarto 1: negado
+    b = writeBatch(db);
+    b.update(doc(db, `tenants/${A}/reservations/e1`), { roomId: "r3", roomNumber: "3", updatedAt: serverTimestamp() });
+    b.set(doc(db, `tenants/${A}/roomSchedules/r3`), { items: { e1: { start: at(11), end: at(14), guestName: "Ana" } } }, { merge: true });
+    await assertFails(b.commit());
+    b = writeBatch(db);
+    b.update(doc(db, `tenants/${A}/reservations/e1`), { roomId: "r3", roomNumber: "3", updatedAt: serverTimestamp() });
+    b.set(doc(db, `tenants/${A}/roomSchedules/r3`), { items: { e1: { start: at(11), end: at(14), guestName: "Ana" } } }, { merge: true });
+    b.set(doc(db, `tenants/${A}/roomSchedules/r1`), { items: { e1: deleteField() } }, { merge: true });
+    await assertSucceeds(b.commit());
+
+    // autoria e situação não mudam por alteração
+    await assertFails(updateDoc(doc(db, `tenants/${A}/reservations/e1`), { createdBy: REC + "x" }));
+  });
+
+  it("check-in da reserva: hospedagem nova no mesmo lote e reserva fora da agenda", async () => {
+    await seed("k1");
+    const db = staff(A, "reception");
+    const H = "f".repeat(64);
+    const checkin = (stayId: string, opts: { keepSchedule?: boolean; createStay?: boolean } = {}) => {
+      const b = writeBatch(db);
+      if (opts.createStay !== false) {
+        b.set(doc(db, `tenants/${A}/stayAccess/${H}`), { stayId, status: "active" });
+        b.update(doc(db, `tenants/${A}/rooms/r1`), { status: "occupied", currentStayId: stayId, updatedAt: serverTimestamp() });
+        b.set(doc(db, `tenants/${A}/stays/${stayId}`), { ...stayData(H, {}, "r1", REC), createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+      }
+      b.update(doc(db, `tenants/${A}/reservations/k1`), { status: "checked_in", stayId, updatedAt: serverTimestamp() });
+      if (!opts.keepSchedule) b.set(doc(db, `tenants/${A}/roomSchedules/r1`), { items: { k1: deleteField() } }, { merge: true });
+      return b.commit();
+    };
+    await assertFails(checkin("s1", { createStay: false })); // hospedagem já existente
+    await assertFails(checkin("k-s1", { keepSchedule: true }));
+    await assertSucceeds(checkin("k-s2"));
   });
 });

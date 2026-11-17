@@ -24,6 +24,7 @@ service cloud.firestore {
     function lockPath(t) { return /databases/$(database)/documents/tenants/$(t)/registerLock/current; }
     function revenuePath(t, r) { return /databases/$(database)/documents/tenants/$(t)/revenues/$(r); }
     function paymentPath(t, s, k) { return /databases/$(database)/documents/tenants/$(t)/stays/$(s)/payments/$(k); }
+    function schedulePath(t, r) { return /databases/$(database)/documents/tenants/$(t)/roomSchedules/$(r); }
     function accessPath(t, h) { return /databases/$(database)/documents/tenants/$(t)/stayAccess/$(h); }
     function sessionPath(t, h) { return /databases/$(database)/documents/tenants/$(t)/stayAccess/$(h)/sessions/$(request.auth.uid); }
 
@@ -69,6 +70,24 @@ service cloud.firestore {
     function nightsFor(d) {
       return math.ceil((d.plannedCheckOutAt.toMillis() - d.checkInAt.toMillis()) / 86400000.0) < 1
         ? 1 : math.ceil((d.plannedCheckOutAt.toMillis() - d.checkInAt.toMillis()) / 86400000.0);
+    }
+
+    // Reserva: hóspede identificado, pessoas e valores coerentes (mesma conta da hospedagem).
+    function reservationOk(d) {
+      return d.guestName is string && d.guestName.size() > 0 && d.guestName.size() <= 120
+        && d.adults is int && d.adults >= 1 && d.adults <= 50
+        && d.children is int && d.children >= 0 && d.children <= 50
+        && d.checkInAt is timestamp && d.plannedCheckOutAt is timestamp
+        && d.plannedCheckOutAt > d.checkInAt
+        && d.notes is string && d.notes.size() <= 500
+        && d.source in ['direto', 'whatsapp', 'telefone', 'booking', 'airbnb', 'outro']
+        && stayMoneyOk(d);
+    }
+    // A agenda do quarto (depois do lote) tem esta reserva com as mesmas datas.
+    function inSchedule(t, roomId, id, d) {
+      return id in getAfter(schedulePath(t, roomId)).data.items
+        && getAfter(schedulePath(t, roomId)).data.items[id].start == d.checkInAt
+        && getAfter(schedulePath(t, roomId)).data.items[id].end == d.plannedCheckOutAt;
     }
 
     // ---------------- Hóspede (QR Code) ----------------
@@ -371,6 +390,69 @@ service cloud.firestore {
               && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readByGuestAt']));
           allow delete: if false;
         }
+      }
+
+      // ---- Reservas futuras ----
+      // Agenda por quarto: um documento com o mapa das reservas confirmadas (id -> {start, end}).
+      // O app lê e grava a agenda numa transação; duas reservas simultâneas no mesmo quarto
+      // colidem nesse documento e a segunda é refeita e recusada se houver sobreposição.
+      match /roomSchedules/{roomId} {
+        allow read: if canFrontDesk(t) || canFinance(t);
+        allow create, update: if canFrontDesk(t)
+          && request.resource.data.keys().hasOnly(['items', 'updatedAt'])
+          && request.resource.data.items is map;
+        allow delete: if false;
+      }
+
+      match /reservations/{id} {
+        allow read: if canFrontDesk(t) || canFinance(t);
+
+        // Nova reserva: campos fechados, valores coerentes e registrada na agenda do quarto no mesmo lote.
+        allow create: if canFrontDesk(t)
+          && request.resource.data.keys().hasOnly(['status', 'roomId', 'roomNumber', 'guestName', 'guestPhone', 'guestEmail',
+               'guestId', 'adults', 'children', 'checkInAt', 'plannedCheckOutAt', 'nights', 'dailyRateCents', 'lodgingCents',
+               'discountCents', 'feesCents', 'totalPlannedCents', 'source', 'notes', 'createdBy', 'createdAt', 'updatedAt'])
+          && request.resource.data.status == 'confirmed'
+          && request.resource.data.createdBy == request.auth.uid
+          && reservationOk(request.resource.data)
+          && exists(roomPath(t, request.resource.data.roomId))
+          && get(roomPath(t, request.resource.data.roomId)).data.get('archived', false) != true
+          && inSchedule(t, request.resource.data.roomId, id, request.resource.data);
+
+        // Alterar (datas, quarto, valores, contato): continua confirmada e a agenda acompanha.
+        allow update: if canFrontDesk(t)
+          && resource.data.status == 'confirmed'
+          && request.resource.data.status == 'confirmed'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['roomId', 'roomNumber', 'guestName', 'guestPhone',
+               'guestEmail', 'guestId', 'adults', 'children', 'checkInAt', 'plannedCheckOutAt', 'nights', 'dailyRateCents',
+               'lodgingCents', 'discountCents', 'feesCents', 'totalPlannedCents', 'source', 'notes', 'updatedAt'])
+          && reservationOk(request.resource.data)
+          && get(roomPath(t, request.resource.data.roomId)).data.get('archived', false) != true
+          && inSchedule(t, request.resource.data.roomId, id, request.resource.data)
+          && (request.resource.data.roomId == resource.data.roomId
+              || !(id in getAfter(schedulePath(t, resource.data.roomId)).data.items));
+
+        // Cancelar (com motivo) ou marcar "não compareceu" (só depois da chegada prevista): sai da agenda.
+        allow update: if canFrontDesk(t)
+          && resource.data.status == 'confirmed'
+          && request.resource.data.status in ['cancelled', 'no_show']
+          && (request.resource.data.status == 'cancelled' || resource.data.checkInAt < request.time)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'cancelReason', 'cancelledBy', 'cancelledAt', 'updatedAt'])
+          && request.resource.data.cancelledBy == request.auth.uid
+          && request.resource.data.cancelReason is string && request.resource.data.cancelReason.size() <= 300
+          && !(id in getAfter(schedulePath(t, resource.data.roomId)).data.items);
+
+        // Check-in da reserva: a hospedagem nasce no mesmo lote e a reserva sai da agenda.
+        allow update: if canFrontDesk(t)
+          && resource.data.status == 'confirmed'
+          && request.resource.data.status == 'checked_in'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'stayId', 'updatedAt'])
+          && request.resource.data.stayId is string
+          && !exists(stayPath(t, request.resource.data.stayId))
+          && getAfter(stayPath(t, request.resource.data.stayId)).data.status == 'active'
+          && !(id in getAfter(schedulePath(t, resource.data.roomId)).data.items);
+
+        allow delete: if false;
       }
 
       // ---- Acesso por QR Code (somente o hash do token existe no banco) ----

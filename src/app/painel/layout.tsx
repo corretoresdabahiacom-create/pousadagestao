@@ -40,6 +40,7 @@ export default function PainelLayout({ children }: { children: ReactNode }) {
   const nav = [
     { href: "/painel/", label: "Início", show: true },
     { href: "/painel/checkin/", label: "Check-in", show: front },
+    { href: "/painel/reservas/", label: "Reservas", show: front || role === "finance" },
     { href: "/painel/hospedagens/", label: "Hospedagens", show: front || role === "finance" },
     { href: "/painel/calendario/", label: "Calendário", show: front },
     { href: "/painel/chat/", label: "Chat", show: front },

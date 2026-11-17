@@ -6,6 +6,7 @@ import { useAuth } from "@/lib/auth/AuthProvider";
 import { useRooms } from "@/lib/useRooms";
 import { type RoomStatus } from "@/lib/types";
 import { useActiveStays } from "@/lib/useStays";
+import { useReservations } from "@/lib/useReservations";
 import { dreCompetencia, useCashEntries, usePayables, useReceivables, useRevenues } from "@/lib/finance";
 import { useNow } from "@/lib/useNow";
 import { usePublicInfo } from "@/lib/usePublicInfo";
@@ -33,6 +34,7 @@ export default function DashboardPage() {
   const revs = useRevenues(isFin ? t : undefined, monthStart);
   const pub = usePublicInfo(hasStays ? t : undefined);
   const canWarn = ["owner", "admin", "reception"].includes(role);
+  const res = useReservations(hasStays ? t : undefined, 30);
 
   if (error) return <Alert>{error}</Alert>;
   if (!rooms) return <Spinner />;
@@ -85,6 +87,27 @@ export default function DashboardPage() {
           ))}
         </div>
       )}
+
+      {hasStays && res.reservations && (() => {
+        const soon = res.reservations.filter((r) => r.status === "confirmed" && r.checkInAt.getTime() < now + 2 * DAY_MS);
+        if (soon.length === 0) return null;
+        return (
+          <Card>
+            <h2 className="mb-2 text-base font-semibold">Chegadas previstas (próximas 48 h)</h2>
+            <ul className="divide-y divide-slate-100 text-sm">
+              {soon.map((r) => (
+                <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
+                  <Link href={`/painel/reservas/?id=${r.id}`} className="font-medium text-brand-700 hover:underline">Quarto {r.roomNumber} · {r.guestName}</Link>
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span className={r.checkInAt.getTime() < now ? "font-medium text-red-700" : "text-slate-600"}>{r.checkInAt.getTime() < now ? "Chegada já passou · " : "Chegada · "}{fmtDateTime(r.checkInAt)}</span>
+                    {canWarn && <Link href={`/painel/checkin/?reserva=${r.id}`} className="rounded-md bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-800 ring-1 ring-inset ring-brand-600/20 hover:bg-brand-100">Fazer check-in</Link>}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </Card>
+        );
+      })()}
 
       {hasStays && act.stays && (
         <Card>

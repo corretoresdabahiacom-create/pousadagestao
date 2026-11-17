@@ -69,6 +69,8 @@ tenants/{tenantId}                # name, ownerUid, planId, status, limits
     sessions/{uid}                # sessão do hóspede
     push/{uid}                    # reservado
   stayNotes/{stayId}              # observação interna (o hóspede não lê)
+  reservations/{id}               # reservas futuras (confirmada → check-in feito / cancelada / não compareceu)
+  roomSchedules/{roomId}          # agenda do quarto: items[reservaId] = {start, end}; evita reserva dupla
   cashRegisters/{id}              # abertura/fechamento do caixa
   registerLock/current            # trava: só um caixa aberto por vez
   cashEntries/{id}                # razão de caixa imutável; ID por origem (stay-, pay-, rcv-, manual-)
@@ -152,3 +154,14 @@ Sem servidor, a coerência é garantida por regras que acoplam documentos no mes
 ## 13. Backup
 
 O Spark não tem exportação agendada. Em **Relatórios → Backup completo** (dono/admin) o painel baixa um JSON com todos os dados da pousada (sem hashes de QR nem chat); guarde fora do Firebase, de preferência todo mês. A cópia de servidor (`gcloud firestore export`) exige o plano Blaze.
+
+
+## 14. Reservas futuras (Fase 8)
+
+- Cada quarto tem uma agenda (`roomSchedules/{roomId}`) com as reservas confirmadas. Criar, alterar, cancelar, fazer check-in e prorrogar
+  uma hospedagem leem essa agenda **dentro de uma transação**: duas pessoas reservando o mesmo quarto ao mesmo tempo colidem no mesmo
+  documento, e a segunda é refeita e recusada se as datas se cruzarem. Saída às 12h e entrada às 12h não conflitam.
+- As regras exigem que a reserva e a agenda andem juntas: ao criar/alterar, a agenda tem a reserva com as mesmas datas; ao cancelar,
+  marcar "não compareceu" (só após a chegada prevista) ou fazer check-in, a reserva sai da agenda. O check-in da reserva só vale
+  junto com a criação da hospedagem no mesmo lote.
+- Limitação: as regras não conseguem varrer a agenda para conferir sobreposição; isso é feito pelo aplicativo na transação.

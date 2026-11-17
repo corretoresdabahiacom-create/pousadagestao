@@ -4,7 +4,7 @@ import { getFirebase } from "@/lib/firebase/client";
 const COLLECTIONS = [
   "roomCategories", "rooms", "guests", "stays", "stayNotes", "cashRegisters", "cashEntries", "revenues",
   "recurringExpenses", "accountsPayable", "accountsReceivable", "financialCategories", "suppliers",
-  "cleaningTasks", "maintenanceTickets", "members", "auditLogs",
+  "cleaningTasks", "maintenanceTickets", "members", "auditLogs", "reservations", "roomSchedules",
 ];
 const STAY_SUBS = ["companions", "charges", "payments"];
 
